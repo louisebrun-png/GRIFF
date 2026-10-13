@@ -152,4 +152,56 @@ with tab1:
                 ],
                 "Volume": [28, 18, 12, 5, 3]
             })
-            st.dataframe(causes_df, hide_index=
+            st.dataframe(causes_df, hide_index=True, use_container_width=True)
+            
+        st.markdown("### 📋 Table de Contrôle Détaillée (Modèle Type)")
+        st.info("💡 Filtrez et observez les lignes nécessitant une action corrective dans Isiwork ou Artis.")
+        
+        # Aperçu des données concaténées
+        if not df_isiwork.empty:
+            st.markdown("**Aperçu des données Isiwork :**")
+            st.dataframe(df_isiwork.head(10), use_container_width=True)
+        elif not df_artis.empty:
+            st.markdown("**Aperçu des données Artis :**")
+            st.dataframe(df_artis.head(10), use_container_width=True)
+            
+    else:
+        st.info("👈 Veuillez déposer vos fichiers d'export **Isiwork** et/ou **Artis** dans le panneau latéral pour afficher les analyses de la filiale.")
+
+# --- ONGLET 2 : CONSOLIDATION GROUPE ---
+with tab2:
+    st.subheader("🌍 Vision Consolidée Groupe Koesio")
+    st.markdown("Comparatif de la performance des rapprochements BL/Factures sur l'ensemble des filiales.")
+    
+    # Indicateurs Groupe
+    g1, g2, g3 = st.columns(3)
+    with g1:
+        st.metric("Volume Total Groupe", "4 890 Factures", "+3.8%")
+    with g2:
+        st.metric("Taux Rapprochement Moyen Groupe", "81.2%", "+1.5%")
+    with g3:
+        st.metric("Gain de Temps Estimé", "124 Heures / Mois", "Grâce à l'automatisation")
+        
+    st.markdown("---")
+    
+    # Tableau Benchmark Filiales
+    st.markdown("### 🏆 Benchmark Inter-Filiales")
+    df_groupe = pd.DataFrame({
+        "Filiale Koesio": ["Koesio CEE", "Koesio AURA", "Koesio Aquitaine", "Koesio IDF", "Koesio PACA"],
+        "Factures Traitées": [1248, 1100, 950, 890, 702],
+        "Rapprochement Auto (%)": ["84.5%", "82.0%", "79.8%", "78.5%", "81.0%"],
+        "Écarts à Réglage Manuel": [42, 51, 63, 58, 30],
+        "Statut Recette / Prod": ["✅ Validé v5.5.0", "⚙️ En préparation", "✅ Production", "✅ Production", "✅ Production"]
+    })
+    st.dataframe(df_groupe, hide_index=True, use_container_width=True)
+    
+    # Graphique comparatif
+    fig_groupe = px.line(
+        df_groupe, 
+        x="Filiale Koesio", 
+        y="Factures Traitées", 
+        title="Volume de Factures Traitées par Filiale (Mensuel)",
+        markers=True,
+        color_discrete_sequence=["#00539C"]
+    )
+    st.plotly_chart(fig_groupe, use_container_width=True)
