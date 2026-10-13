@@ -77,7 +77,6 @@ def load_zeendoc_data(uploaded_files):
     df_list = []
     for file in uploaded_files:
         try:
-            # Inspection pour détecter où se trouvent les en-têtes
             df_temp = pd.read_excel(file, header=None) if file.name.endswith('.xlsx') else pd.read_csv(file, header=None)
             header_row = 0
             for idx, row in df_temp.iterrows():
@@ -122,7 +121,40 @@ df_isiwork = load_zeendoc_data(files_isiwork) if files_isiwork else pd.DataFrame
 df_artis = load_artis_data(files_artis) if files_artis else pd.DataFrame()
 
 # ------------------------------------------------------------------------------
-# 5. ONGLETS DE NAVIGATION
+# 5. INITIALISATION DES VARIABLES DE CALCULS (Évite les NameError)
+# ------------------------------------------------------------------------------
+artis_total, artis_batch, artis_manuel, pct_batch, pct_manuel = 0, 0, 0, 0.0, 0.0
+isiwork_total, auto_cnt, faux_man_cnt, vrai_man_cnt, attente_cnt = 0, 0, 0, 0, 0
+pct_auto, pct_faux, pct_vrai, pct_attente = 0.0, 0.0, 0.0, 0.0
+
+# Calculs effectifs sur les données Artis si chargées
+artis_total = len(df_artis) if not df_artis.empty else 0
+if artis_total > 0 and 'Statut' in df_artis.columns:
+    artis_batch = len(df_artis[df_artis['Statut'] == 'Bon à payer'])
+    artis_manuel = artis_total - artis_batch
+    pct_batch = (artis_batch / artis_total) * 100
+    pct_manuel = (artis_manuel / artis_total) * 100
+
+# Calculs effectifs sur les données Zeendoc/Isiwork si chargées
+isiwork_total = len(df_isiwork) if not df_isiwork.empty else 0
+if isiwork_total > 0 and 'Statut de rapprochement' in df_isiwork.columns:
+    auto_cnt = len(df_isiwork[df_isiwork['Statut de rapprochement'] == 'Rapproché automatiquement'])
+    
+    if 'Tampons / Notes / Conversations' in df_isiwork.columns:
+        notes = df_isiwork['Tampons / Notes / Conversations'].fillna('')
+        faux_man_cnt = len(df_isiwork[notes.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
+    
+    man_total = len(df_isiwork[df_isiwork['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)])
+    vrai_man_cnt = max(0, man_total - faux_man_cnt)
+    attente_cnt = max(0, isiwork_total - (auto_cnt + faux_man_cnt + vrai_man_cnt))
+    
+    pct_auto = (auto_cnt / isiwork_total) * 100
+    pct_faux = (faux_man_cnt / isiwork_total) * 100
+    pct_vrai = (vrai_man_cnt / isiwork_total) * 100
+    pct_attente = (attente_cnt / isiwork_total) * 100
+
+# ------------------------------------------------------------------------------
+# 6. ONGLETS DE NAVIGATION
 # ------------------------------------------------------------------------------
 tab1, tab2, tab3 = st.tabs(["🏢 Vision Filiale (Rapport)", "🌍 Consolidation Groupe", "✉️ Modèle de Mail Généré"])
 
@@ -135,39 +167,6 @@ with tab1:
     if not df_isiwork.empty or not df_artis.empty:
         st.success("Données traitées et synchronisées avec succès !")
         
-        # --- CALCULS STATISTIQUES REELS ARTIS ---
-        artis_total = len(df_artis) if not df_artis.empty else 0
-        if artis_total > 0 and 'Statut' in df_artis.columns:
-            artis_batch = len(df_artis[df_artis['Statut'] == 'Bon à payer'])
-            artis_manuel = artis_total - artis_batch
-            pct_batch = (artis_batch / artis_total) * 100
-            pct_manuel = (artis_manuel / artis_total) * 100
-        else:
-            artis_batch, artis_manuel, pct_batch, pct_manuel = 0, 0, 0, 0
-
-        # --- CALCULS STATISTIQUES REELS ZEENDOC / ISIWORK ---
-        isiwork_total = len(df_isiwork) if not df_isiwork.empty else 0
-        if isiwork_total > 0 and 'Statut de rapprochement' in df_isiwork.columns:
-            auto_cnt = len(df_isiwork[df_isiwork['Statut de rapprochement'] == 'Rapproché automatiquement'])
-            # Détection Faux Manuel / Vrai Manuel via Tampons / Notes
-            faux_man_cnt = 0
-            vrai_man_cnt = 0
-            if 'Tampons / Notes / Conversations' in df_isiwork.columns:
-                notes = df_isiwork['Tampons / Notes / Conversations'].fillna('')
-                faux_man_cnt = len(df_isiwork[notes.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
-            
-            man_total = len(df_isiwork[df_isiwork['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)])
-            vrai_man_cnt = max(0, man_total - faux_man_cnt)
-            attente_cnt = max(0, isiwork_total - (auto_cnt + faux_man_cnt + vrai_man_cnt))
-            
-            pct_auto = (auto_cnt / isiwork_total) * 100
-            pct_faux = (faux_man_cnt / isiwork_total) * 100
-            pct_vrai = (vrai_man_cnt / isiwork_total) * 100
-            pct_attente = (attente_cnt / isiwork_total) * 100
-        else:
-            auto_cnt, faux_man_cnt, vrai_man_cnt, attente_cnt = 0, 0, 0, 0
-            pct_auto, pct_faux, pct_vrai, pct_attente = 0, 0, 0, 0
-
         # --- CARTES KPI ---
         c1, c2, c3, c4 = st.columns(4)
         with c1:
