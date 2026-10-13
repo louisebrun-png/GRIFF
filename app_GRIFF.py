@@ -11,7 +11,6 @@ import plotly.express as px
 # ------------------------------------------------------------------------------
 # 1. CONFIGURATION DE LA PAGE STREAMLIT
 # ------------------------------------------------------------------------------
-# Configuration du titre de l'onglet du navigateur et de la mise en page
 st.set_page_config(
     page_title="GRIFF - Koesio",
     page_icon="🦅",
@@ -20,43 +19,20 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------------------------------
-# 2. STYLES CSS PERSONNALISÉS (Charte graphique Koesio)
+# 2. EN-TÊTE ET EXPLICATION DE L'ACRONYME GRIFF (Compatible Mode Sombre / Clair)
 # ------------------------------------------------------------------------------
-st.markdown("""
-    <style>
-    /* Style du titre principal */
-    .main-title {
-        font-size: 32px;
-        font-weight: bold;
-        color: #00539C;
-        margin-bottom: 0px;
-    }
-    /* Style du encadré expliquant l'acronyme GRIFF */
-    .acronym-box {
-        background-color: #F0F4F8;
-        border-left: 5px solid #00539C;
-        padding: 12px 18px;
-        border-radius: 4px;
-        margin-bottom: 20px;
-    }
-    </style>
-""", unsafe_allow_html=True)
+st.title("🦅 GRIFF — Tour de Contrôle Koesio")
+
+# Message explicatif nativement stylisé par Streamlit pour s'adapter au thème
+st.info(
+    "**GRIFF** : **G**estion & **R**approchement **I**ntelligent des **F**actures et **F**lux\n\n"
+    "Application d'analyse mensuelle et de contrôle automatisé des rapprochements Bon de Livraison (BL) / Factures d'Achat entre les systèmes **Isiwork** et **Artis** pour les filiales Koesio."
+)
+
+st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 3. EN-TÊTE ET EXPLICATION DE L'ACRONYME GRIFF
-# ------------------------------------------------------------------------------
-st.markdown('<p class="main-title">🦅 GRIFF — Tour de Contrôle Koesio</p>', unsafe_allow_html=True)
-
-# Définition officielle de l'acronyme GRIFF
-st.markdown("""
-<div class="acronym-box">
-    <b>GRIFF</b> : <b>G</b>estion & <b>R</b>approchement <b>I</b>ntelligent des <b>F</b>actures et <b>F</b>lux<br/>
-    <small>Application d'analyse mensuelle et de contrôle automatisé des rapprochements Bon de Livraison (BL) / Factures d'Achat entre les systèmes <b>Isiwork</b> et <b>Artis</b> pour les filiales Koesio.</small>
-</div>
-""", unsafe_allow_html=True)
-
-# ------------------------------------------------------------------------------
-# 4. BARRE LATÉRALE (SIDEBAR) : INGESTION DES FICHIERS & FILTRES
+# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION DES FICHIERS & FILTRES
 # ------------------------------------------------------------------------------
 st.sidebar.header("📂 Ingestion des Données")
 st.sidebar.markdown("Téléversez vos exports mensuels pour démarrer l'analyse.")
@@ -93,7 +69,7 @@ mois_select = st.sidebar.selectbox(
 )
 
 # ------------------------------------------------------------------------------
-# 5. FONCTIONS UTILES (Chargement et fusion des données)
+# 4. FONCTIONS UTILES (Chargement et fusion des données)
 # ------------------------------------------------------------------------------
 @st.cache_data
 def load_and_merge_files(uploaded_files):
@@ -118,7 +94,7 @@ df_isiwork = load_and_merge_files(files_isiwork) if files_isiwork else pd.DataFr
 df_artis = load_and_merge_files(files_artis) if files_artis else pd.DataFrame()
 
 # ------------------------------------------------------------------------------
-# 6. STRUCTURE PAR ONGLETS (DÉTAIL FILIALE vs SYNTHÈSE GROUPE)
+# 5. STRUCTURE PAR ONGLETS (DÉTAIL FILIALE vs SYNTHÈSE GROUPE)
 # ------------------------------------------------------------------------------
 tab1, tab2 = st.tabs(["🏢 Analyse par Filiale", "🌍 Consolidation Groupe"])
 
@@ -130,7 +106,7 @@ with tab1:
     
     # Affichage si des fichiers sont chargés
     if files_isiwork or files_artis:
-        st.success(f" Données prêtes : {len(files_isiwork)} fichier(s) Isiwork | {len(files_artis)} fichier(s) Artis")
+        st.success(f"Données prêtes : {len(files_isiwork)} fichier(s) Isiwork | {len(files_artis)} fichier(s) Artis")
         
         # --- CARTE DES INDICATEURS CLÉS (KPI) ---
         col1, col2, col3, col4 = st.columns(4)
@@ -162,7 +138,7 @@ with tab1:
                 y=["Rapprochés Auto", "Écarts / Erreurs"],
                 title="Rapprochements Automatiques vs Écarts par Fournisseur",
                 barmode="stack",
-                color_discrete_sequence=["#00539C", "#E53E3E"]
+                color_discrete_sequence=["#2B6CB0", "#E53E3E"]
             )
             st.plotly_chart(fig, use_container_width=True)
             
@@ -193,7 +169,7 @@ with tab1:
             st.dataframe(df_artis.head(10), use_container_width=True)
             
     else:
-        st.info("👈 Veuillez déposer vos fichiers d'export **Isiwork** et/ou **Artis** dans le panneau latéral pour lancer l'analyse.")
+        st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork** et/ou **Artis** dans le panneau latéral pour lancer l'analyse.")
 
 # ==============================================================================
 # ONGLET 2 : CONSOLIDATION ET BENCHMARK GROUPE
@@ -231,6 +207,6 @@ with tab2:
         y="Factures Traitées", 
         title="Volume de Factures Traitées par Filiale (Mensuel)",
         markers=True,
-        color_discrete_sequence=["#00539C"]
+        color_discrete_sequence=["#2B6CB0"]
     )
     st.plotly_chart(fig_groupe, use_container_width=True)
