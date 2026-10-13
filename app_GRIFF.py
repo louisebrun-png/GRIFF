@@ -32,7 +32,7 @@ st.info(
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION & FILTRES
+# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION UNIQUE
 # ------------------------------------------------------------------------------
 st.sidebar.header("📂 Ingestion des Données")
 st.sidebar.markdown("Téléversez vos exports mensuels pour lancer le calcul automatisé.")
@@ -51,14 +51,6 @@ files_artis = st.sidebar.file_uploader(
     type=["xlsx", "csv"],
     accept_multiple_files=True,
     help="Export de la recherche des factures fournisseurs Artis."
-)
-
-st.sidebar.markdown("---")
-st.sidebar.header("🎯 Configuration")
-
-filiale_select = st.sidebar.selectbox(
-    "Filiale Koesio",
-    ["KOESIO ILE DE FRANCE", "KOESIO CEE", "KOESIO AURA", "KOESIO AQUITAINE", "Toutes les filiales"]
 )
 
 # ------------------------------------------------------------------------------
@@ -110,7 +102,19 @@ df_isiwork = load_zeendoc_data(files_isiwork) if files_isiwork else pd.DataFrame
 df_artis = load_artis_data(files_artis) if files_artis else pd.DataFrame()
 
 # ------------------------------------------------------------------------------
-# 5. FONCTIONS DE CALCUL VENTILÉ PAR MOIS COMPTABLE
+# 5. DÉTECTION AUTOMATIQUE DE LA FILIALE
+# ------------------------------------------------------------------------------
+def detect_filiale(df_art):
+    if not df_art.empty and 'Organisation interne' in df_art.columns:
+        filiales = df_art['Organisation interne'].dropna().unique().tolist()
+        if filiales:
+            return ", ".join(map(str, filiales))
+    return "KOESIO ILE DE FRANCE"
+
+filiale_detectee = detect_filiale(df_artis)
+
+# ------------------------------------------------------------------------------
+# 6. FONCTIONS DE CALCUL VENTILÉ PAR MOIS COMPTABLE
 # ------------------------------------------------------------------------------
 mois_fr = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
@@ -208,7 +212,7 @@ else:
     periode_globale = f"{df_ged_monthly['Mois Comptable'].iloc[0]} et {df_ged_monthly['Mois Comptable'].iloc[-1]}"
 
 # ------------------------------------------------------------------------------
-# 6. ONGLETS DE NAVIGATION
+# 7. ONGLETS DE NAVIGATION
 # ------------------------------------------------------------------------------
 tab1, tab2 = st.tabs(["🏢 Vision Filiale (Rapport & Mail)", "🌍 Consolidation Groupe"])
 
@@ -216,7 +220,7 @@ tab1, tab2 = st.tabs(["🏢 Vision Filiale (Rapport & Mail)", "🌍 Consolidatio
 # ONGLET 1 : VISION FILIALE
 # ==============================================================================
 with tab1:
-    st.subheader(f"📊 Bilan de Production — {filiale_select}")
+    st.subheader(f"📊 Bilan de Production — {filiale_detectee}")
     
     if not df_isiwork.empty or not df_artis.empty:
         st.success(f"📅 Périodes analysées : **{periode_globale}**")
@@ -229,7 +233,7 @@ with tab1:
         with c3:
             st.metric("Mois Traités", len(df_ged_monthly))
         with c4:
-            st.metric("Filiale", filiale_select)
+            st.metric("Filiale Détectée", filiale_detectee)
             
         st.markdown("---")
         
@@ -252,7 +256,7 @@ with tab1:
         
         mail_formatted = f"""Bonjour à tous,
 
-Vous trouverez ci-dessous l'analyse détaillée des performances du flux de rapprochement automatique des factures fournisseurs pour {filiale_select}, consolidée sur la période de {periode_globale}.
+Vous trouverez ci-dessous l'analyse détaillée des performances du flux de rapprochement automatique des factures fournisseurs pour {filiale_detectee}, consolidée sur la période de {periode_globale}.
 
 Afin de maintenir une analyse d'une grande rigueur opérationnelle, nous appliquons la méthodologie de lecture fine des tampons et des lignes de commentaires Isiwork. Cela nous permet de dissocier les rapprochements purement bloquants sur les produits des "Faux Manuels" (factures validées humainement à cause de frais annexes ou de port non saisis sur le BC initial) afin d'identifier les leviers précis de performance.
 
