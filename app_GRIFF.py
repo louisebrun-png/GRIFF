@@ -1,24 +1,37 @@
+# ==============================================================================
+# APPLICATION : GRIFF — Tour de Contrôle Koesio
+# DESCRIPTION : Analyse mensuelle et rapprochement automatique BL / Factures
+# AUTEUR      : Louise BRUN - Koesio Groupe
+# ==============================================================================
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# Configuration de la page Streamlit
+# ------------------------------------------------------------------------------
+# 1. CONFIGURATION DE LA PAGE STREAMLIT
+# ------------------------------------------------------------------------------
+# Configuration du titre de l'onglet du navigateur et de la mise en page
 st.set_page_config(
-    page_title="GRIFF - Tour de Contrôle Koesio",
+    page_title="GRIFF - Koesio",
     page_icon="🦅",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Style CSS personnalisé
+# ------------------------------------------------------------------------------
+# 2. STYLES CSS PERSONNALISÉS (Charte graphique Koesio)
+# ------------------------------------------------------------------------------
 st.markdown("""
     <style>
+    /* Style du titre principal */
     .main-title {
         font-size: 32px;
         font-weight: bold;
         color: #00539C;
         margin-bottom: 0px;
     }
+    /* Style du encadré expliquant l'acronyme GRIFF */
     .acronym-box {
         background-color: #F0F4F8;
         border-left: 5px solid #00539C;
@@ -26,61 +39,68 @@ st.markdown("""
         border-radius: 4px;
         margin-bottom: 20px;
     }
-    .metric-card {
-        background-color: #FFFFFF;
-        border: 1px solid #E2E8F0;
-        padding: 15px;
-        border-radius: 8px;
-        text-align: center;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    }
     </style>
 """, unsafe_allow_html=True)
 
-# En-tête principal
+# ------------------------------------------------------------------------------
+# 3. EN-TÊTE ET EXPLICATION DE L'ACRONYME GRIFF
+# ------------------------------------------------------------------------------
 st.markdown('<p class="main-title">🦅 GRIFF — Tour de Contrôle Koesio</p>', unsafe_allow_html=True)
 
-# Explication de l'acronyme GRIFF
+# Définition officielle de l'acronyme GRIFF
 st.markdown("""
 <div class="acronym-box">
     <b>GRIFF</b> : <b>G</b>estion & <b>R</b>approchement <b>I</b>ntelligent des <b>F</b>actures et <b>F</b>lux<br/>
-    <small>Application d'analyse mensuelle et de contrôle automatisé des rapprochements BL / Factures entre les outils <b>Isiwork</b> et <b>Artis</b> pour l'ensemble des filiales Koesio.</small>
+    <small>Application d'analyse mensuelle et de contrôle automatisé des rapprochements Bon de Livraison (BL) / Factures d'Achat entre les systèmes <b>Isiwork</b> et <b>Artis</b> pour les filiales Koesio.</small>
 </div>
-""", unsafe_unsafe_html=False if hasattr(st, "unsafe_html") else True)
+""", unsafe_allow_html=True)
 
-# Sidebar : Chargement des fichiers
+# ------------------------------------------------------------------------------
+# 4. BARRE LATÉRALE (SIDEBAR) : INGESTION DES FICHIERS & FILTRES
+# ------------------------------------------------------------------------------
 st.sidebar.header("📂 Ingestion des Données")
-st.sidebar.markdown("Téléversez vos exports mensuels pour lancer le contrôle automatisé.")
+st.sidebar.markdown("Téléversez vos exports mensuels pour démarrer l'analyse.")
 
+# Upload des fichiers Isiwork (multi-fichiers autorisés)
 files_isiwork = st.sidebar.file_uploader(
-    "Exports Isiwork (1 ou plusieurs fichiers)",
+    "Exports Isiwork (.xlsx, .csv)",
     type=["xlsx", "csv"],
     accept_multiple_files=True,
-    help="Sélectionnez un ou plusieurs fichiers d'exports Isiwork."
+    help="Vous pouvez sélectionner un ou plusieurs fichiers d'exports Isiwork."
 )
 
+# Upload des fichiers Artis (multi-fichiers autorisés)
 files_artis = st.sidebar.file_uploader(
-    "Exports Artis (1 ou plusieurs fichiers)",
+    "Exports Artis (.xlsx, .csv)",
     type=["xlsx", "csv"],
     accept_multiple_files=True,
-    help="Sélectionnez un ou plusieurs fichiers d'exports Artis."
+    help="Vous pouvez sélectionner un ou plusieurs fichiers d'exports Artis."
 )
 
 st.sidebar.markdown("---")
-st.sidebar.header("🎯 Filtres Globaux")
+st.sidebar.header("🎯 Filtres d'Analyse")
+
+# Filtre par filiale Koesio
 filiale_select = st.sidebar.selectbox(
     "Filiale Koesio",
     ["Toutes les filiales", "Koesio CEE", "Koesio AURA", "Koesio Aquitaine", "Autres filiales"]
 )
 
+# Filtre par période
 mois_select = st.sidebar.selectbox(
     "Période d'analyse",
     ["Mois en cours", "Dernier mois clos", "Cumul annuel (YTD)"]
 )
 
-# Fonction de chargement et concaténation des fichiers
+# ------------------------------------------------------------------------------
+# 5. FONCTIONS UTILES (Chargement et fusion des données)
+# ------------------------------------------------------------------------------
 @st.cache_data
 def load_and_merge_files(uploaded_files):
+    """
+    Fonction permettant de lire et concaténer plusieurs fichiers Excel ou CSV.
+    Met en cache le résultat pour accélérer l'affichage.
+    """
     df_list = []
     for file in uploaded_files:
         if file.name.endswith('.csv'):
@@ -88,43 +108,49 @@ def load_and_merge_files(uploaded_files):
         else:
             df = pd.read_excel(file)
         df_list.append(df)
+    
     if df_list:
         return pd.concat(df_list, ignore_index=True)
     return pd.DataFrame()
 
-# Traitement des données si les fichiers sont fournis
+# Chargement effectif des données téléversées
 df_isiwork = load_and_merge_files(files_isiwork) if files_isiwork else pd.DataFrame()
 df_artis = load_and_merge_files(files_artis) if files_artis else pd.DataFrame()
 
-# Navigation par Onglets
+# ------------------------------------------------------------------------------
+# 6. STRUCTURE PAR ONGLETS (DÉTAIL FILIALE vs SYNTHÈSE GROUPE)
+# ------------------------------------------------------------------------------
 tab1, tab2 = st.tabs(["🏢 Analyse par Filiale", "🌍 Consolidation Groupe"])
 
-# --- ONGLET 1 : ANALYSE PAR FILIALE ---
+# ==============================================================================
+# ONGLET 1 : ANALYSE DÉTAILLÉE PAR FILIALE
+# ==============================================================================
 with tab1:
     st.subheader(f"📊 Analyse détaillée — {filiale_select}")
     
+    # Affichage si des fichiers sont chargés
     if files_isiwork or files_artis:
-        st.success(f" Données chargées avec succès : {len(files_isiwork)} fichier(s) Isiwork | {len(files_artis)} fichier(s) Artis")
+        st.success(f" Données prêtes : {len(files_isiwork)} fichier(s) Isiwork | {len(files_artis)} fichier(s) Artis")
         
-        # Section KPI
-        col1, col2, col3, col4 = st.st.columns(4) if hasattr(st, "st") else st.columns(4)
+        # --- CARTE DES INDICATEURS CLÉS (KPI) ---
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Factures Ingestées", "1 248", delta="+5.2%")
         with col2:
-            st.metric("Taux de Rapprochement Auto", "84.5%", delta="+2.1%")
+            st.metric("Taux Rapprochement Auto", "84.5%", delta="+2.1%")
         with col3:
             st.metric("Écarts de Prix / Montants", "42", delta="-8", delta_color="inverse")
         with col4:
-            st.metric("Dossiers à Dérapprocher / Traiter", "18", delta="À vérifier")
+            st.metric("Dossiers à Dérapprocher", "18", delta="À vérifier")
             
         st.markdown("---")
         
-        # Modèle type d'analyse
+        # --- GRAPHIQUES ET ANALYSES ---
         col_left, col_right = st.columns([2, 1])
         
         with col_left:
-            st.markdown("### 🔍 Répartition des Anomalies & Rejets par Fournisseur")
-            # Données factices de démonstration
+            st.markdown("### 🔍 Rapprochements par Fournisseur Clé")
+            # Données de démonstration
             df_demo = pd.DataFrame({
                 "Fournisseur": ["SHARP", "EDOX", "TECH DATA / TD SYNNEX", "HP", "Canon"],
                 "Rapprochés Auto": [450, 210, 180, 120, 80],
@@ -134,14 +160,14 @@ with tab1:
                 df_demo, 
                 x="Fournisseur", 
                 y=["Rapprochés Auto", "Écarts / Erreurs"],
-                title="Status des Rapprochements par Fournisseur Clé",
+                title="Rapprochements Automatiques vs Écarts par Fournisseur",
                 barmode="stack",
                 color_discrete_sequence=["#00539C", "#E53E3E"]
             )
             st.plotly_chart(fig, use_container_width=True)
             
         with col_right:
-            st.markdown("### ⚠️ Principales Causes de Non-Rapprochement")
+            st.markdown("### ⚠️ Motifs de Non-Rapprochement")
             causes_df = pd.DataFrame({
                 "Motif de Rejet": [
                     "Article inconnu / Non mappé",
@@ -154,26 +180,29 @@ with tab1:
             })
             st.dataframe(causes_df, hide_index=True, use_container_width=True)
             
-        st.markdown("### 📋 Table de Contrôle Détaillée (Modèle Type)")
-        st.info("💡 Filtrez et observez les lignes nécessitant une action corrective dans Isiwork ou Artis.")
+        st.markdown("---")
+        st.markdown("### 📋 Table de Contrôle Détaillée (Aperçu des Données)")
         
-        # Aperçu des données concaténées
+        # Affichage des premières lignes des fichiers injectés
         if not df_isiwork.empty:
-            st.markdown("**Aperçu des données Isiwork :**")
+            st.markdown("**Extraits de l'export Isiwork :**")
             st.dataframe(df_isiwork.head(10), use_container_width=True)
-        elif not df_artis.empty:
-            st.markdown("**Aperçu des données Artis :**")
+            
+        if not df_artis.empty:
+            st.markdown("**Extraits de l'export Artis :**")
             st.dataframe(df_artis.head(10), use_container_width=True)
             
     else:
-        st.info("👈 Veuillez déposer vos fichiers d'export **Isiwork** et/ou **Artis** dans le panneau latéral pour afficher les analyses de la filiale.")
+        st.info("👈 Veuillez déposer vos fichiers d'export **Isiwork** et/ou **Artis** dans le panneau latéral pour lancer l'analyse.")
 
-# --- ONGLET 2 : CONSOLIDATION GROUPE ---
+# ==============================================================================
+# ONGLET 2 : CONSOLIDATION ET BENCHMARK GROUPE
+# ==============================================================================
 with tab2:
     st.subheader("🌍 Vision Consolidée Groupe Koesio")
-    st.markdown("Comparatif de la performance des rapprochements BL/Factures sur l'ensemble des filiales.")
+    st.markdown("Vue d'ensemble comparative de la performance de rapprochement inter-filiales.")
     
-    # Indicateurs Groupe
+    # Indicateurs de performance Groupe
     g1, g2, g3 = st.columns(3)
     with g1:
         st.metric("Volume Total Groupe", "4 890 Factures", "+3.8%")
@@ -184,18 +213,18 @@ with tab2:
         
     st.markdown("---")
     
-    # Tableau Benchmark Filiales
+    # Tableau de benchmark par filiale
     st.markdown("### 🏆 Benchmark Inter-Filiales")
     df_groupe = pd.DataFrame({
         "Filiale Koesio": ["Koesio CEE", "Koesio AURA", "Koesio Aquitaine", "Koesio IDF", "Koesio PACA"],
         "Factures Traitées": [1248, 1100, 950, 890, 702],
         "Rapprochement Auto (%)": ["84.5%", "82.0%", "79.8%", "78.5%", "81.0%"],
-        "Écarts à Réglage Manuel": [42, 51, 63, 58, 30],
+        "Écarts à Traiter": [42, 51, 63, 58, 30],
         "Statut Recette / Prod": ["✅ Validé v5.5.0", "⚙️ En préparation", "✅ Production", "✅ Production", "✅ Production"]
     })
     st.dataframe(df_groupe, hide_index=True, use_container_width=True)
     
-    # Graphique comparatif
+    # Graphique de répartition du volume Groupe
     fig_groupe = px.line(
         df_groupe, 
         x="Filiale Koesio", 
