@@ -110,81 +110,110 @@ df_isiwork = load_zeendoc_data(files_isiwork) if files_isiwork else pd.DataFrame
 df_artis = load_artis_data(files_artis) if files_artis else pd.DataFrame()
 
 # ------------------------------------------------------------------------------
-# 5. DÉTECTION AUTOMATIQUE DE LA PÉRIODE DANS LES FICHIERS
+# 5. FONCTIONS DE CALCUL VENTILÉ PAR MOIS COMPTABLE
 # ------------------------------------------------------------------------------
-def detect_period(df_artis_in, df_isiwork_in):
-    mois_fr = {
-        1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
-        7: "Juillet", 8: "Août", 9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre"
-    }
-    dates = []
+mois_fr = {
+    1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
+    7: "Juillet", 8: "Août", 9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre"
+}
+
+def compute_monthly_breakdown(df_art, df_isi):
+    rows_ged = []
+    rows_erp = []
     
-    if not df_artis_in.empty and 'Date' in df_artis_in.columns:
-        dates_artis = pd.to_datetime(df_artis_in['Date'], errors='coerce').dropna()
-        dates.extend(dates_artis.tolist())
+    # Prépare colonne Mois dans Artis
+    if not df_art.empty and 'Date' in df_art.columns:
+        df_art['Date_dt'] = pd.to_datetime(df_art['Date'], errors='coerce')
+        df_art['Mois_Period'] = df_art['Date_dt'].dt.to_period('M')
+    else:
+        df_art['Mois_Period'] = None
+
+    # Prépare colonne Mois dans Isiwork
+    if not df_isi.empty and 'Date facture' in df_isi.columns:
+        df_isi['Date_dt'] = pd.to_datetime(df_isi['Date facture'], errors='coerce')
+        df_isi['Mois_Period'] = df_isi['Date_dt'].dt.to_period('M')
+    else:
+        df_isi['Mois_Period'] = None
+
+    # Extrait la liste ordonnée des mois présents
+    periods_art = df_art['Mois_Period'].dropna().unique().tolist() if 'Mois_Period' in df_art else []
+    periods_isi = df_isi['Mois_Period'].dropna().unique().tolist() if 'Mois_Period' in df_isi else []
+    all_periods = sorted(list(set(periods_art + periods_isi)))
+
+    if not all_periods:
+        all_periods = [None]
+
+    for p in all_periods:
+        label_mois = f"{mois_fr.get(p.month, str(p.month))} {p.year}" if p else "Mois non détecté"
         
-    if not df_isiwork_in.empty and 'Date facture' in df_isiwork_in.columns:
-        dates_isiwork = pd.to_datetime(df_isiwork_in['Date facture'], errors='coerce').dropna()
-        dates.extend(dates_isiwork.tolist())
+        # Filtrage par mois
+        sub_art = df_art[df_art['Mois_Period'] == p] if p and 'Mois_Period' in df_art else df_art
+        sub_isi = df_isi[df_isi['Mois_Period'] == p] if p and 'Mois_Period' in df_isi else df_isi
         
-    if dates:
-        s_dates = pd.Series(dates)
-        periods = sorted(s_dates.dt.to_period('M').unique())
-        
-        formatted_periods = [f"{mois_fr.get(p.month, str(p.month))} {p.year}" for p in periods]
-            
-        if len(formatted_periods) == 1:
-            return formatted_periods[0]
-        elif len(formatted_periods) == 2:
-            return f"{formatted_periods[0]} et {formatted_periods[1]}"
+        # --- CALCULS ARTIS (ERP) ---
+        tot_art = len(sub_art)
+        if tot_art > 0 and 'Statut' in sub_art.columns:
+            art_batch = len(sub_art[sub_art['Statut'] == 'Bon à payer'])
+            art_man = tot_art - art_batch
+            pct_batch = (art_batch / tot_art) * 100
+            pct_man = (art_man / tot_art) * 100
         else:
-            return f"{formatted_periods[0]} à {formatted_periods[-1]}"
+            art_batch, art_man, pct_batch, pct_man = 0, 0, 0.0, 0.0
+
+        # --- CALCULS ISIWORK (GED) ---
+        tot_isi = len(sub_isi)
+        if tot_isi > 0 and 'Statut de rapprochement' in sub_isi.columns:
+            auto_c = len(sub_isi[sub_isi['Statut de rapprochement'] == 'Rapproché automatiquement'])
             
-    return "Mois non spécifié"
+            faux_c = 0
+            if 'Tampons / Notes / Conversations' in sub_isi.columns:
+                notes = sub_isi['Tampons / Notes / Conversations'].fillna('')
+                faux_c = len(sub_isi[notes.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
+            
+            man_tot = len(sub_isi[sub_isi['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)])
+            vrai_c = max(0, man_tot - faux_c)
+            
+            ged_pure_c = max(0, tot_art - tot_isi) if tot_art > tot_isi else 0
+            attente_c = max(0, tot_isi - (auto_c + faux_c + vrai_c))
+            
+            pct_a = (auto_c / tot_isi) * 100
+            pct_f = (faux_c / tot_isi) * 100
+            pct_v = (vrai_c / tot_isi) * 100
+            pct_gp = (ged_pure_c / tot_art * 100) if tot_art > 0 else 0.0
+            pct_att = (attente_c / tot_isi) * 100
+        else:
+            auto_c, faux_c, vrai_c, ged_pure_c, attente_c = 0, 0, 0, 0, 0
+            pct_a, pct_f, pct_v, pct_gp, pct_att = 0.0, 0.0, 0.0, 0.0, 0.0
 
-periode_detectee = detect_period(df_artis, df_isiwork)
+        rows_ged.append({
+            "Mois Comptable": label_mois,
+            "Total Factures Traitées": tot_isi,
+            "Rapprochement Auto": f"{pct_a:.1f}% ({auto_c})",
+            "Faux Manuel (Frais/Port)": f"{pct_f:.1f}% ({faux_c})",
+            "Vrai Manuel (Écarts)": f"{pct_v:.1f}% ({vrai_c})",
+            "Flux GED pure (Saisie direct ERP)": f"{pct_gp:.1f}% ({ged_pure_c})",
+            "En attente": f"{pct_att:.1f}% ({attente_c})"
+        })
+
+        rows_erp.append({
+            "Mois Comptable": label_mois,
+            "Volume Intégré Artis": tot_art,
+            "Via Batch Automatique (admin)": f"{pct_batch:.1f}% ({art_batch})",
+            "Saisie / Forçage Manuel ERP": f"{pct_man:.1f}% ({art_man})"
+        })
+
+    return pd.DataFrame(rows_ged), pd.DataFrame(rows_erp), all_periods
+
+df_ged_monthly, df_erp_monthly, period_list = compute_monthly_breakdown(df_artis, df_isiwork)
+
+# Titre Période Globale pour l'en-tête
+if len(df_ged_monthly) == 1:
+    periode_globale = df_ged_monthly["Mois Comptable"].iloc[0]
+else:
+    periode_globale = f"{df_ged_monthly['Mois Comptable'].iloc[0]} et {df_ged_monthly['Mois Comptable'].iloc[-1]}"
 
 # ------------------------------------------------------------------------------
-# 6. INITIALISATION ET CALCULS REELS
-# ------------------------------------------------------------------------------
-artis_total, artis_batch, artis_manuel, pct_batch, pct_manuel = 0, 0, 0, 0.0, 0.0
-isiwork_total, auto_cnt, faux_man_cnt, vrai_man_cnt, flux_ged_pure, attente_cnt = 0, 0, 0, 0, 0, 0
-pct_auto, pct_faux, pct_vrai, pct_ged_pure, pct_attente = 0.0, 0.0, 0.0, 0.0, 0.0
-
-# Calculs Artis
-artis_total = len(df_artis) if not df_artis.empty else 0
-if artis_total > 0 and 'Statut' in df_artis.columns:
-    artis_batch = len(df_artis[df_artis['Statut'] == 'Bon à payer'])
-    artis_manuel = artis_total - artis_batch
-    pct_batch = (artis_batch / artis_total) * 100
-    pct_manuel = (artis_manuel / artis_total) * 100
-
-# Calculs Zeendoc / Isiwork
-isiwork_total = len(df_isiwork) if not df_isiwork.empty else 0
-if isiwork_total > 0 and 'Statut de rapprochement' in df_isiwork.columns:
-    auto_cnt = len(df_isiwork[df_isiwork['Statut de rapprochement'] == 'Rapproché automatiquement'])
-    
-    if 'Tampons / Notes / Conversations' in df_isiwork.columns:
-        notes = df_isiwork['Tampons / Notes / Conversations'].fillna('')
-        faux_man_cnt = len(df_isiwork[notes.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
-    
-    man_total = len(df_isiwork[df_isiwork['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)])
-    vrai_man_cnt = max(0, man_total - faux_man_cnt)
-    
-    # Calcul des pièces en direct ERP / GED pure
-    if artis_total > isiwork_total:
-        flux_ged_pure = max(0, artis_total - isiwork_total)
-    
-    attente_cnt = max(0, isiwork_total - (auto_cnt + faux_man_cnt + vrai_man_cnt))
-    
-    pct_auto = (auto_cnt / isiwork_total) * 100
-    pct_faux = (faux_man_cnt / isiwork_total) * 100
-    pct_vrai = (vrai_man_cnt / isiwork_total) * 100
-    pct_ged_pure = (flux_ged_pure / artis_total * 100) if artis_total > 0 else 0.0
-    pct_attente = (attente_cnt / isiwork_total) * 100
-
-# ------------------------------------------------------------------------------
-# 7. ONGLETS DE NAVIGATION
+# 6. ONGLETS DE NAVIGATION
 # ------------------------------------------------------------------------------
 tab1, tab2, tab3 = st.tabs(["🏢 Vision Filiale (Rapport)", "🌍 Consolidation Groupe", "✉️ Modèle de Mail Généré"])
 
@@ -195,40 +224,25 @@ with tab1:
     st.subheader(f"📊 Bilan de Production — {filiale_select}")
     
     if not df_isiwork.empty or not df_artis.empty:
-        st.success(f"📅 Période détectée : **{periode_detectee}**")
+        st.success(f"📅 Périodes analysées : **{periode_globale}**")
         
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.metric("Total Factures Artis", f"{artis_total:,}".replace(',', ' '))
+            st.metric("Total Factures Artis", f"{len(df_artis):,}".replace(',', ' '))
         with c2:
-            st.metric("Intégrées par Batch (Bon à payer)", f"{pct_batch:.1f}%", f"{artis_batch} factures")
+            st.metric("Total Factures Isiwork", f"{len(df_isiwork):,}".replace(',', ' '))
         with c3:
-            st.metric("Total Traitées Isiwork (Factures GED)", f"{isiwork_total:,}".replace(',', ' '))
+            st.metric("Mois Traités", len(df_ged_monthly))
         with c4:
-            st.metric("Rapprochement Auto GED", f"{pct_auto:.1f}%", f"{auto_cnt} factures")
+            st.metric("Filiale", filiale_select)
             
         st.markdown("---")
         
-        st.markdown("### 1. Vision GED — Typologie des flux dans Isiwork")
-        ged_summary = pd.DataFrame({
-            "Mois Comptable": [periode_detectee],
-            "Total Factures Traitées (Facture GED)": [isiwork_total],
-            "Rapprochement Auto": [f"{pct_auto:.1f}% ({auto_cnt})"],
-            "Faux Manuel (Frais/Port)": [f"{pct_faux:.1f}% ({faux_man_cnt})"],
-            "Vrai Manuel (Écarts)": [f"{pct_vrai:.1f}% ({vrai_man_cnt})"],
-            "Flux GED pure (Saisie direct ERP)": [f"{pct_ged_pure:.1f}% ({flux_ged_pure})"],
-            "En attente": [f"{pct_attente:.1f}% ({attente_cnt})"]
-        })
-        st.dataframe(ged_summary, hide_index=True, use_container_width=True)
+        st.markdown("### 1. Vision GED — Typologie des flux dans Isiwork (Lignes par Mois)")
+        st.dataframe(df_ged_monthly, hide_index=True, use_container_width=True)
         
-        st.markdown("### 2. Vision ERP — Intégration et traitement réel dans Artis")
-        erp_summary = pd.DataFrame({
-            "Mois Comptable": [periode_detectee],
-            "Volume Intégré Artis": [artis_total],
-            "Via Batch Automatique (admin)": [f"{pct_batch:.1f}% ({artis_batch})"],
-            "Saisie / Forçage Manuel ERP": [f"{pct_manuel:.1f}% ({artis_manuel})"]
-        })
-        st.dataframe(erp_summary, hide_index=True, use_container_width=True)
+        st.markdown("### 2. Vision ERP — Intégration et traitement réel dans Artis (Lignes par Mois)")
+        st.dataframe(df_erp_monthly, hide_index=True, use_container_width=True)
         
     else:
         st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
@@ -248,24 +262,26 @@ with tab2:
     st.dataframe(df_groupe, hide_index=True, use_container_width=True)
 
 # ==============================================================================
-# ONGLET 3 : MODÈLE DE MAIL GÉNÉRÉ (Conforme au modèle PDF d'origine)
+# ONGLET 3 : MODÈLE DE MAIL GÉNÉRÉ (Multi-lignes par mois comptable)
 # ==============================================================================
 with tab3:
     st.subheader("✉️ Générateur de Rapport par Mail")
     st.markdown("Copiez-collez le contenu ci-dessous directement dans votre logiciel de messagerie :")
     
+    # Génération dynamique de la table Markdown GED pour le mail
+    table_ged_md = df_ged_monthly.to_markdown(index=False)
+    table_erp_md = df_erp_monthly.to_markdown(index=False)
+    
     mail_formatted = f"""Bonjour à tous,
 
-Vous trouverez ci-dessous l'analyse détaillée des performances du flux de rapprochement automatique des factures fournisseurs pour {filiale_select}, consolidée sur la période de {periode_detectee}.
+Vous trouverez ci-dessous l'analyse détaillée des performances du flux de rapprochement automatique des factures fournisseurs pour {filiale_select}, consolidée sur la période de {periode_globale}.
 
 Afin de maintenir une analyse d'une grande rigueur opérationnelle, nous appliquons la méthodologie de lecture fine des tampons et des lignes de commentaires Isiwork. Cela nous permet de dissocier les rapprochements purement bloquants sur les produits des "Faux Manuels" (factures validées humainement à cause de frais annexes ou de port non saisis sur le BC initial) afin d'identifier les leviers précis de performance.
 
 1. Vision GED
 Typologie des flux dans Isiwork
 
-| Mois Comptable | Factures GED (Total) | Rapprochement Auto | Faux Manuel (Frais/Port) | Vrai Manuel (Écarts) | Flux GED pure (Saisie direct ERP) | En attente |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| {periode_detectee} | {isiwork_total} | {pct_auto:.1f}% ({auto_cnt}) | {pct_faux:.1f}% ({faux_man_cnt}) | {pct_vrai:.1f}% ({vrai_man_cnt}) | {pct_ged_pure:.1f}% ({flux_ged_pure}) | {pct_attente:.1f}% ({attente_cnt}) |
+{table_ged_md}
 
 Légende des états:
 • Rapprochement Auto: Factures rapprochées à 100% automatiquement sans aucune intervention.
@@ -277,9 +293,7 @@ Légende des états:
 
 2. Vision ERP — Intégration et traitement réel dans Artis
 
-| Mois Comptable | Volume Intégré Artis | Via Batch Automatique (admin) | Saisie / Forçage Manuel ERP |
-| :--- | :---: | :---: | :---: |
-| {periode_detectee} | {artis_total} | {pct_batch:.1f}% ({artis_batch}) | {pct_manuel:.1f}% ({artis_manuel}) |
+{table_erp_md}
 
 
 3. Focus Actions / Analyse des rapprochements "Vrais Manuels"
@@ -290,7 +304,7 @@ Sur la part des traitements bloqués pour de vrais écarts de prix ou de quantit
 
 
 4. Suivi des chantiers techniques et conclusion
-• Stabilité opérationnelle de l'ERP: La performance de l'injection finale en comptabilité montre {pct_batch:.1f}% du volume global intégré directement par le batch automatique sans intervention utilisateur.
+• Stabilité opérationnelle de l'ERP: L'injection finale en comptabilité confirme la performance du batch automatique sans intervention utilisateur.
 • Levier "Frais Annexes": L'application locale de l'article d'écart dédié aux frais de port (ZINF-FRAIS_DE_PORT) permettra de convertir automatiquement les Faux Manuels en succès machine.
 
 Nous restons à votre entière disposition pour échanger sur ce bilan.
