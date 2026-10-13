@@ -121,21 +121,18 @@ def compute_monthly_breakdown(df_art, df_isi):
     rows_ged = []
     rows_erp = []
     
-    # Prépare colonne Mois dans Artis
     if not df_art.empty and 'Date' in df_art.columns:
         df_art['Date_dt'] = pd.to_datetime(df_art['Date'], errors='coerce')
         df_art['Mois_Period'] = df_art['Date_dt'].dt.to_period('M')
     else:
         df_art['Mois_Period'] = None
 
-    # Prépare colonne Mois dans Isiwork
     if not df_isi.empty and 'Date facture' in df_isi.columns:
         df_isi['Date_dt'] = pd.to_datetime(df_isi['Date facture'], errors='coerce')
         df_isi['Mois_Period'] = df_isi['Date_dt'].dt.to_period('M')
     else:
         df_isi['Mois_Period'] = None
 
-    # Extrait la liste ordonnée des mois présents
     periods_art = df_art['Mois_Period'].dropna().unique().tolist() if 'Mois_Period' in df_art else []
     periods_isi = df_isi['Mois_Period'].dropna().unique().tolist() if 'Mois_Period' in df_isi else []
     all_periods = sorted(list(set(periods_art + periods_isi)))
@@ -146,11 +143,10 @@ def compute_monthly_breakdown(df_art, df_isi):
     for p in all_periods:
         label_mois = f"{mois_fr.get(p.month, str(p.month))} {p.year}" if p else "Mois non détecté"
         
-        # Filtrage par mois
         sub_art = df_art[df_art['Mois_Period'] == p] if p and 'Mois_Period' in df_art else df_art
         sub_isi = df_isi[df_isi['Mois_Period'] == p] if p and 'Mois_Period' in df_isi else df_isi
         
-        # --- CALCULS ARTIS (ERP) ---
+        # ARTIS (ERP)
         tot_art = len(sub_art)
         if tot_art > 0 and 'Statut' in sub_art.columns:
             art_batch = len(sub_art[sub_art['Statut'] == 'Bon à payer'])
@@ -160,7 +156,7 @@ def compute_monthly_breakdown(df_art, df_isi):
         else:
             art_batch, art_man, pct_batch, pct_man = 0, 0, 0.0, 0.0
 
-        # --- CALCULS ISIWORK (GED) ---
+        # ISIWORK (GED)
         tot_isi = len(sub_isi)
         if tot_isi > 0 and 'Statut de rapprochement' in sub_isi.columns:
             auto_c = len(sub_isi[sub_isi['Statut de rapprochement'] == 'Rapproché automatiquement'])
@@ -202,11 +198,10 @@ def compute_monthly_breakdown(df_art, df_isi):
             "Saisie / Forçage Manuel ERP": f"{pct_man:.1f}% ({art_man})"
         })
 
-    return pd.DataFrame(rows_ged), pd.DataFrame(rows_erp), all_periods
+    return pd.DataFrame(rows_ged), pd.DataFrame(rows_erp)
 
-df_ged_monthly, df_erp_monthly, period_list = compute_monthly_breakdown(df_artis, df_isiwork)
+df_ged_monthly, df_erp_monthly = compute_monthly_breakdown(df_artis, df_isiwork)
 
-# Titre Période Globale pour l'en-tête
 if len(df_ged_monthly) == 1:
     periode_globale = df_ged_monthly["Mois Comptable"].iloc[0]
 else:
@@ -215,7 +210,7 @@ else:
 # ------------------------------------------------------------------------------
 # 6. ONGLETS DE NAVIGATION
 # ------------------------------------------------------------------------------
-tab1, tab2, tab3 = st.tabs(["🏢 Vision Filiale (Rapport)", "🌍 Consolidation Groupe", "✉️ Modèle de Mail Généré"])
+tab1, tab2 = st.tabs(["🏢 Vision Filiale (Rapport & Mail)", "🌍 Consolidation Groupe"])
 
 # ==============================================================================
 # ONGLET 1 : VISION FILIALE
@@ -244,35 +239,18 @@ with tab1:
         st.markdown("### 2. Vision ERP — Intégration et traitement réel dans Artis (Lignes par Mois)")
         st.dataframe(df_erp_monthly, hide_index=True, use_container_width=True)
         
-    else:
-        st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
-
-# ==============================================================================
-# ONGLET 2 : CONSOLIDATION GROUPE
-# ==============================================================================
-with tab2:
-    st.subheader("🌍 Consolidation Inter-Filiales Koesio")
-    df_groupe = pd.DataFrame({
-        "Filiale Koesio": ["KOESIO ILE DE FRANCE", "KOESIO CEE", "KOESIO AURA"],
-        "Factures Traitées Artis": [675, 964, 1100],
-        "Taux Batch Automatique (%)": ["84.2%", "79.6%", "82.0%"],
-        "Rapprochement Auto GED (%)": ["37.3%", "57.8%", "45.0%"],
-        "Statut Prochaine Étape": ["En cours d'analyse", "✅ Validé v5.5.0", "⚙️ En préparation"]
-    })
-    st.dataframe(df_groupe, hide_index=True, use_container_width=True)
-
-# ==============================================================================
-# ONGLET 3 : MODÈLE DE MAIL GÉNÉRÉ (Multi-lignes par mois comptable)
-# ==============================================================================
-with tab3:
-    st.subheader("✉️ Générateur de Rapport par Mail")
-    st.markdown("Copiez-collez le contenu ci-dessous directement dans votre logiciel de messagerie :")
-    
-    # Génération dynamique de la table Markdown GED pour le mail
-    table_ged_md = df_ged_monthly.to_markdown(index=False)
-    table_erp_md = df_erp_monthly.to_markdown(index=False)
-    
-    mail_formatted = f"""Bonjour à tous,
+        st.markdown("---")
+        st.markdown("### ✉️ Modèle de Mail Généré Automatiquement")
+        st.info("Copiez-collez ce texte directement dans votre messagerie :")
+        
+        try:
+            table_ged_md = df_ged_monthly.to_markdown(index=False)
+            table_erp_md = df_erp_monthly.to_markdown(index=False)
+        except ImportError:
+            table_ged_md = df_ged_monthly.to_string(index=False)
+            table_erp_md = df_erp_monthly.to_string(index=False)
+        
+        mail_formatted = f"""Bonjour à tous,
 
 Vous trouverez ci-dessous l'analyse détaillée des performances du flux de rapprochement automatique des factures fournisseurs pour {filiale_select}, consolidée sur la période de {periode_globale}.
 
@@ -314,4 +292,14 @@ Louise BRUN
 Chef de projet pour KOESIO GROUPE & KAM
 Potentiale
 """
-    st.code(mail_formatted, language="markdown")
+        st.code(mail_formatted, language="markdown")
+        
+    else:
+        st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
+
+# ==============================================================================
+# ONGLET 2 : CONSOLIDATION GROUPE
+# ==============================================================================
+with tab2:
+    st.subheader("🌍 Consolidation Inter-Filiales Koesio")
+    st.info("Cet onglet permettra de consolider l'ensemble des filiales lorsque plusieurs fichiers seront chargés simultanément.")
