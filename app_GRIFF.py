@@ -486,7 +486,7 @@ with tab1:
         st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
 
 # ==============================================================================
-# ONGLET 2 : CONSOLIDATION GROUPE
+# ONGLET 2 : CONSOLIDATION GROUPE (TRIÉ DU PLUS GRAND % AUTO AU PLUS PETIT)
 # ==============================================================================
 with tab2:
     st.subheader("🌍 Consolidation Inter-Filiales — Groupe Koesio")
@@ -501,7 +501,7 @@ with tab2:
         
         st.success(f"🏢 **{len(filiales_groupe)} filiales actives chargées** : {', '.join(map(str, filiales_groupe))}")
         
-        rows_ged_groupe = []
+        rows_ged_raw = []
         tot_vol_brut = 0
         tot_ged_pure = 0
         tot_vol_epure = 0
@@ -510,7 +510,6 @@ with tab2:
         tot_vrai = 0
         tot_att = 0
         
-        # MAPPINGS ZEENDOC STRICTS AVEC BCMP & JEAPI AQUITAINE
         mapping_zeendoc = {
             "KOESIO ILE DE FRANCE": ["KOESIO IDF", "IDF", "ILE DE FRANCE"],
             "KOESIO NORD OUEST": ["NORD OUEST", "NORD-OUEST", "KNO"],
@@ -527,13 +526,12 @@ with tab2:
             "EOLE": ["EOLE"]
         }
         
-        for idx, f in enumerate(filiales_groupe, start=1):
+        for f in filiales_groupe:
             sub_art_f = df_artis_filtered[df_artis_filtered['Organisation interne'] == f]
             
             if 'Organisation_Zeendoc' in df_isiwork_filtered.columns:
                 mask_isi = pd.Series(False, index=df_isiwork_filtered.index)
                 
-                # Discrimination stricte Nord-Ouest / Nord Ouest vs Ouest
                 if "NORD" in f.upper() and "OUEST" in f.upper():
                     mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("NORD", case=False, na=False) & df_isiwork_filtered['Organisation_Zeendoc'].str.contains("OUEST", case=False, na=False)
                 elif "OUEST" in f.upper():
@@ -584,15 +582,6 @@ with tab2:
             pct_att = (att_c / denom * 100) if vol_epure > 0 else 0
             pct_pot = pct_a + pct_f
             
-            str_eval_auto = f"{pct_a:.1f}% ({auto_c})"
-            if dict_hist_m1:
-                for key_h, val_h in dict_hist_m1.items():
-                    if f.upper() in key_h.upper() or key_h.upper() in f.upper():
-                        delta_a = pct_a - val_h.get("auto_pct_m1", pct_a)
-                        symb = "↗️" if delta_a > 0 else "↘️" if delta_a < 0 else "➡️"
-                        str_eval_auto += f" [{symb} {delta_a:+.1f}% vs M-1]"
-                        break
-
             tot_vol_brut += vol_brut
             tot_ged_pure += ged_pure
             tot_vol_epure += vol_epure
@@ -601,17 +590,52 @@ with tab2:
             tot_vrai += vrai_c
             tot_att += att_c
             
-            rows_ged_groupe.append({
-                "Rang": idx,
+            rows_ged_raw.append({
                 "Filiale Groupe": f,
                 "Vol. Brut GED": vol_brut,
-                "Flux GED Pure": f"{ged_pure}",
+                "Flux GED Pure": ged_pure,
                 "Vol. Épuré": vol_epure,
+                "pct_a": pct_a,
+                "auto_c": auto_c,
+                "pct_f": pct_f,
+                "faux_c": faux_c,
+                "pct_v": pct_v,
+                "vrai_c": vrai_c,
+                "pct_att": pct_att,
+                "att_c": att_c,
+                "pct_pot": pct_pot
+            })
+
+        # TRI DE TABLEAU 1 : % RAPPROCHEMENT AUTO DESCENDANT, PUIS VOL. ÉPURÉ DESCENDANT
+        df_ged_temp = pd.DataFrame(rows_ged_raw)
+        df_ged_temp = df_ged_temp.sort_values(by=["pct_a", "Vol. Épuré"], ascending=[False, False]).reset_index(drop=True)
+        
+        rows_ged_groupe = []
+        for idx, row in df_ged_temp.iterrows():
+            f_name = row["Filiale Groupe"]
+            pct_a_val = row["pct_a"]
+            auto_c_val = row["auto_c"]
+            
+            str_eval_auto = f"{pct_a_val:.1f}% ({auto_c_val})"
+            if dict_hist_m1:
+                for key_h, val_h in dict_hist_m1.items():
+                    if f_name.upper() in key_h.upper() or key_h.upper() in f_name.upper():
+                        delta_a = pct_a_val - val_h.get("auto_pct_m1", pct_a_val)
+                        symb = "↗️" if delta_a > 0 else "↘️" if delta_a < 0 else "➡️"
+                        str_eval_auto += f" [{symb} {delta_a:+.1f}% vs M-1]"
+                        break
+
+            rows_ged_groupe.append({
+                "Rang": idx + 1,
+                "Filiale Groupe": f_name,
+                "Vol. Brut GED": row["Vol. Brut GED"],
+                "Flux GED Pure": f"{row['Flux GED Pure']}",
+                "Vol. Épuré": row["Vol. Épuré"],
                 "🤖 Rapprochement Auto (Évolution M vs M-1)": str_eval_auto,
-                "🚚 Faux Manuel (Frais)": f"{pct_f:.1f}% ({faux_c})",
-                "🛠️ Vrai Manuel (Litiges)": f"{pct_v:.1f}% ({vrai_c})",
-                "⏳ En attente": f"{pct_att:.1f}% ({att_c})",
-                "🎯 Potentiel Cible": f"{pct_pot:.1f}%"
+                "🚚 Faux Manuel (Frais)": f"{row['pct_f']:.1f}% ({row['faux_c']})",
+                "🛠️ Vrai Manuel (Litiges)": f"{row['pct_v']:.1f}% ({row['vrai_c']})",
+                "⏳ En attente": f"{row['pct_att']:.1f}% ({row['att_c']})",
+                "🎯 Potentiel Cible": f"{row['pct_pot']:.1f}%"
             })
             
         pct_tot_a = (tot_auto / tot_vol_epure * 100) if tot_vol_epure > 0 else 0
