@@ -180,7 +180,6 @@ def load_all_data(uploaded_files):
                 else:
                     df_art = pd.read_csv(file)
                 
-                # Normalisation nom Aquitaine
                 if 'Organisation interne' in df_art.columns:
                     df_art['Organisation interne'] = df_art['Organisation interne'].replace('KOESIO AQUITAINE (EX GTO)', 'KOESIO AQUITAINE')
                     
@@ -491,7 +490,7 @@ with tab1:
         st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
 
 # ==============================================================================
-# ONGLET 2 : CONSOLIDATION GROUPE
+# ONGLET 2 : CONSOLIDATION GROUPE (MATCHING STRICT AVEC ANCRAGE DE MOTS)
 # ==============================================================================
 with tab2:
     st.subheader("🌍 Consolidation Inter-Filiales — Groupe Koesio")
@@ -515,36 +514,39 @@ with tab2:
         tot_vrai = 0
         tot_att = 0
         
-        mapping_zeendoc = {
-            "KOESIO ILE DE FRANCE": ["KOESIO IDF", "IDF", "ILE DE FRANCE"],
-            "KOESIO NORD OUEST": ["NORD OUEST", "NORD-OUEST", "KNO"],
-            "KOESIO NORD-OUEST": ["NORD OUEST", "NORD-OUEST", "KNO"],
-            "KOESIO OUEST": ["KOESIO OUEST"],
-            "KOESIO AQUITAINE": ["JEAPI AQUITAINE", "AQUITAINE"],
-            "KOESIO EST": ["KOESIO EST", "EST"],
-            "KOESIO MEDITERRANEE": ["KOESIO MED", "MEDITERRANEE"],
-            "2IT SOLUTIONS": ["RHONE ALPES REPRO INFORMATIQUE", "2IT"],
-            "KOESIO CENTRE EST": ["ESUS", "CENTRE EST", "CEE"],
-            "KOESIO PACA": ["PACA"],
-            "KOESIO OCCITANIE": ["BCMP", "OCCITANIE", "OCC"],
-            "EOLE": ["EOLE"]
-        }
-        
         for f in filiales_groupe:
             sub_art_f = df_artis_filtered[df_artis_filtered['Organisation interne'] == f]
             
             if 'Organisation_Zeendoc' in df_isiwork_filtered.columns:
-                mask_isi = pd.Series(False, index=df_isiwork_filtered.index)
+                f_norm = f.upper().replace("-", " ")
                 
-                f_clean = f.upper().replace("-", " ")
-                if "NORD" in f_clean and "OUEST" in f_clean:
-                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("NORD", case=False, na=False)
-                elif "OUEST" in f_clean:
+                # RECHERCHE STRICTE PAR FILIALE SANS CONFUSION EST/OUEST
+                if "NORD" in f_norm and "OUEST" in f_norm:
+                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("NORD", case=False, na=False) & df_isiwork_filtered['Organisation_Zeendoc'].str.contains("OUEST", case=False, na=False)
+                elif "OUEST" in f_norm:
                     mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("OUEST", case=False, na=False) & ~df_isiwork_filtered['Organisation_Zeendoc'].str.contains("NORD", case=False, na=False)
+                elif "ILE DE FRANCE" in f_norm or "IDF" in f_norm:
+                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("IDF|ILE DE FRANCE", case=False, na=False)
+                elif "AQUITAINE" in f_norm:
+                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("AQUITAINE|JEAPI", case=False, na=False)
+                elif "OCCITANIE" in f_norm:
+                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("BCMP|OCCITANIE|OCC", case=False, na=False)
+                elif "CENTRE EST" in f_norm:
+                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("ESUS|CENTRE EST|CEE", case=False, na=False)
+                elif "2IT" in f_norm:
+                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("RHONE ALPES|2IT", case=False, na=False)
+                elif "MEDITERRANEE" in f_norm or "MED" in f_norm:
+                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("MED", case=False, na=False)
+                elif "PACA" in f_norm:
+                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("PACA", case=False, na=False)
+                elif "EOLE" in f_norm:
+                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("EOLE", case=False, na=False)
+                elif r"\bEST\b" in f_norm:
+                    # Ancrage strict sur EST pour éviter de capturer OUEST
+                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains(r"\bEST\b", case=False, regex=True, na=False) & ~df_isiwork_filtered['Organisation_Zeendoc'].str.contains("OUEST", case=False, na=False)
                 else:
-                    target_aliases = mapping_zeendoc.get(f.upper(), [f.upper()])
-                    for alias in target_aliases:
-                        mask_isi |= df_isiwork_filtered['Organisation_Zeendoc'].str.contains(re.escape(alias), case=False, na=False)
+                    kw = f.replace("KOESIO", "").strip()
+                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains(re.escape(kw), case=False, na=False)
                 
                 sub_isi_f = df_isiwork_filtered[mask_isi].copy()
             else:
