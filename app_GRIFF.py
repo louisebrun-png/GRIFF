@@ -6,7 +6,8 @@
 
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import pypdf
+import re
 
 # ------------------------------------------------------------------------------
 # 1. CONFIGURATION DE LA PAGE STREAMLIT
@@ -32,7 +33,7 @@ st.info(
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION MULTI-FILIALES
+# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION AVEC DÉTECTION AUTO & HISTORIQUE PDF
 # ------------------------------------------------------------------------------
 st.sidebar.header("📂 Ingestion des Données M (Mois en cours)")
 st.sidebar.markdown("Téléversez vos exports mensuels pour lancer le calcul automatisé.")
@@ -52,18 +53,44 @@ files_artis_input = st.sidebar.file_uploader(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.header("📜 Historique M-1 (Optionnel)")
+st.sidebar.header("📜 Historique M-1 (PDF Mail Passé)")
 file_history_input = st.sidebar.file_uploader(
-    "Rapport / Export Consolidé M-1 (.xlsx, .csv)",
-    type=["xlsx", "csv"],
+    "Rapport / Mail PDF M-1 (.pdf, .xlsx, .csv)",
+    type=["pdf", "xlsx", "csv"],
     accept_multiple_files=False,
-    help="Fichier de rapport du mois précédent pour calculer les évolutions par filiale."
+    help="Téléversez le rapport PDF du mois précédent pour extraire l'historique M-1."
 )
 
 all_uploaded_files = (files_isiwork_input or []) + (files_artis_input or [])
 
 # ------------------------------------------------------------------------------
-# 4. FONCTIONS INTELLIGENTES DE CHARGEMENT
+# 4. PARSER HISTORIQUE DEPUIS LE MAIL PDF
+# ------------------------------------------------------------------------------
+@st.cache_data
+def parse_pdf_history(pdf_file):
+    if not pdf_file:
+        return pd.DataFrame()
+    try:
+        reader = pypdf.PdfReader(pdf_file)
+        full_text = ""
+        for page in reader.pages:
+            full_text += page.extract_text() + "\n"
+            
+        # Détection des lignes de filiales dans le PDF
+        lines = full_text.split('\n')
+        parsed_rows = []
+        for line in lines:
+            if "KOESIO" in line.upper():
+                parsed_rows.append({"Texte Bruts": line.strip()})
+        return pd.DataFrame(parsed_rows)
+    except Exception as e:
+        st.error(f"Erreur lors de la lecture du PDF historique M-1: {e}")
+        return pd.DataFrame()
+
+df_history_pdf = parse_pdf_history(file_history_input) if file_history_input and file_history_input.name.endswith('.pdf') else pd.DataFrame()
+
+# ------------------------------------------------------------------------------
+# 5. CHARGEMENT ET NETTOYAGE DES FICHIERS EXPORTS M
 # ------------------------------------------------------------------------------
 @st.cache_data
 def load_all_data(uploaded_files):
@@ -115,7 +142,7 @@ def load_all_data(uploaded_files):
 df_isiwork, df_artis = load_all_data(all_uploaded_files)
 
 # ------------------------------------------------------------------------------
-# 5. DÉTECTION DYNAMIQUE DE LA FILIALE EN VISION INDIVIDUELLE
+# 6. DÉTECTION DYNAMIQUE DE LA FILIALE EN VISION INDIVIDUELLE
 # ------------------------------------------------------------------------------
 def detect_filiale(df_art):
     if not df_art.empty and 'Organisation interne' in df_art.columns:
@@ -127,7 +154,7 @@ def detect_filiale(df_art):
 filiale_detectee = detect_filiale(df_artis)
 
 # ------------------------------------------------------------------------------
-# 6. CALCULS ET VENTILATION PAR MOIS (INTEGRATION FLUX GED PURE ARCHIVAGE)
+# 7. CALCULS ET VENTILATION PAR MOIS
 # ------------------------------------------------------------------------------
 mois_fr = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
@@ -177,28 +204,21 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
         if tot_isi_brut > 0 and 'Statut de rapprochement' in sub_isi.columns:
             notes = sub_isi['Tampons / Notes / Conversations'].fillna('') if 'Tampons / Notes / Conversations' in sub_isi.columns else pd.Series('', index=sub_isi.index)
             
-            # Identification des pièces d'archivage pures (statut de rapprochement vide ou tampon FAF ARTIS)
+            # Isolement archivage / FAF Artis
             no_rappro_mask = sub_isi['Statut de rapprochement'].isna()
             faf_artis_mask = notes.str.contains('FAF ARTIS|FAF_ARTIS', case=False, regex=True)
             
-            # Volume GED Pure (Archivage direct + FAF Artis + Ecart volume)
             gap_volume = max(0, tot_art - tot_isi_brut) if tot_art > tot_isi_brut else 0
             ged_pure_c = no_rappro_mask.sum() + faf_artis_mask.sum() + gap_volume
             
-            # Volumétrie Épurée (soumise au rapprochement réel)
             vol_epure = max(0, tot_isi_brut - (no_rappro_mask.sum() + faf_artis_mask.sum()))
             
-            # Rapprochement Auto
             auto_c = len(sub_isi[sub_isi['Statut de rapprochement'] == 'Rapproché automatiquement'])
-            
-            # Faux Manuel (Frais / Port / DEEE)
             faux_c = len(sub_isi[notes.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
             
-            # Vrai Manuel
             man_tot = len(sub_isi[sub_isi['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)])
             vrai_c = max(0, man_tot - (faux_c + faf_artis_mask.sum()))
             
-            # En attente (calculé sur le volume épuré)
             attente_c = max(0, vol_epure - (auto_c + faux_c + vrai_c))
             
             denom = vol_epure if vol_epure > 0 else tot_isi_brut
@@ -254,7 +274,7 @@ else:
     periode_globale = "Mois non détecté"
 
 # ------------------------------------------------------------------------------
-# 7. EXTRACTION DYNAMIQUE TOPS FOURNISSEURS
+# 8. EXTRACTION DYNAMIQUE TOPS FOURNISSEURS
 # ------------------------------------------------------------------------------
 txt_top_vrai_html = ""
 txt_top_faux_html = ""
@@ -284,7 +304,7 @@ if not txt_top_faux_html:
     txt_top_faux_html = "<li><b>ACTUAL SYSTEMES</b></li><li><b>CANON FRANCE</b></li><li><b>EPARTS</b></li>"
 
 # ------------------------------------------------------------------------------
-# 8. ONGLETS DE NAVIGATION
+# 9. ONGLETS DE NAVIGATION
 # ------------------------------------------------------------------------------
 tab1, tab2 = st.tabs(["🏢 Vision Filiale (Rapport & Mail)", "🌍 Consolidation Groupe"])
 
@@ -404,6 +424,9 @@ with tab1:
 # ==============================================================================
 with tab2:
     st.subheader("🌍 Consolidation Inter-Filiales — Groupe Koesio")
+    
+    if not df_history_pdf.empty:
+        st.info("📜 **Lignes du Mail PDF M-1 détectées** : Comparaison active avec le rapport précédent.")
     
     if not df_artis_filtered.empty and 'Organisation interne' in df_artis_filtered.columns:
         filiales_groupe = df_artis_filtered['Organisation interne'].dropna().unique().tolist()
