@@ -201,7 +201,7 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
             "Rapprochement Auto": f"{pct_a:.1f}% ({auto_c})",
             "Faux Manuel (Frais/Port)": f"{pct_f:.1f}% ({faux_c})",
             "Vrai Manuel (Écarts)": f"{pct_v:.1f}% ({vrai_c})",
-            "Flux GED pure (Saisie direct ERP / FAF)": f"{pct_gp:.1f}% ({ged_pure_c})",
+            "Flux GED pure: f"{pct_gp:.1f}% ({ged_pure_c})",
             "En attente": f"{pct_att:.1f}% ({attente_c})"
         })
 
