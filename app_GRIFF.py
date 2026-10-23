@@ -1,6 +1,6 @@
 # ==============================================================================
 # APPLICATION : GRIFF — Tour de Contrôle Koesio
-# DESCRIPTION : Analyse mensuelle et rapprochement automatique BL / Factures
+# DESCRIPTION : Analyse mensuelle, historique M-1 et suivi des chantiers
 # AUTEUR      : Louise BRUN - Koesio Groupe
 # ==============================================================================
 
@@ -39,7 +39,7 @@ st.info(
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION AVEC DÉTECTION AUTO & HISTORIQUE PDF
+# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION & HISTORIQUE MAIL PDF
 # ------------------------------------------------------------------------------
 st.sidebar.header("📂 Ingestion des Données M (Mois en cours)")
 st.sidebar.markdown("Téléversez vos exports mensuels pour lancer le calcul automatisé.")
@@ -59,40 +59,61 @@ files_artis_input = st.sidebar.file_uploader(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.header("📜 Historique M-1 (PDF Mail Passé)")
+st.sidebar.header("📜 Historique M-1 (Mail PDF Passé)")
 file_history_input = st.sidebar.file_uploader(
-    "Rapport / Mail PDF M-1 (.pdf, .xlsx, .csv)",
-    type=["pdf", "xlsx", "csv"],
+    "Mail PDF du Rapport Précédent M-1 (.pdf)",
+    type=["pdf"],
     accept_multiple_files=False,
-    help="Téléversez le rapport PDF du mois précédent pour extraire l'historique M-1."
+    help="Téléversez le mail PDF du mois dernier pour extraire l'historique et l'évolution par filiale."
 )
 
 all_uploaded_files = (files_isiwork_input or []) + (files_artis_input or [])
 
 # ------------------------------------------------------------------------------
-# 4. PARSER HISTORIQUE DEPUIS LE MAIL PDF (SÉCURISÉ)
+# 4. PARSER AUTOMATIQUE DE L'HISTORIQUE ET DES CHANTIERS DEPUIS LE MAIL PDF
 # ------------------------------------------------------------------------------
 @st.cache_data
-def parse_pdf_history(pdf_file):
+def parse_pdf_history_full(pdf_file):
     if not pdf_file or not HAS_PYPDF:
-        return pd.DataFrame()
+        return {}, []
     try:
         reader = pypdf.PdfReader(pdf_file)
         full_text = ""
         for page in reader.pages:
             full_text += page.extract_text() + "\n"
             
+        hist_data = {}
+        chantiers = []
+        
+        # 1. Extraction des taux par filiale depuis les tableaux du PDF
+        pattern_ged = re.findall(r'KOESIO\s*([A-Za-zÀ-ÿ\s\-\diT]+?)\s*(\d[\d\s]*)\s+(\d+)\s+(\d+)\s+([\d,]+)\s*%\s*\(([\d\s]+)\)\s+([\d,]+)\s*%\s*\(([\d\s]+)\)\s+([\d,]+)\s*%\s*\(([\d\s]+)\)', full_text)
+        
+        for match in pattern_ged:
+            name = match[0].strip()
+            auto_pct = float(match[4].replace(',', '.'))
+            vrai_pct = float(match[8].replace(',', '.'))
+            hist_data[name] = {
+                "auto_pct_m1": auto_pct,
+                "vrai_pct_m1": vrai_pct
+            }
+            
+        # 2. Extraction des chantiers techniques historiques
         lines = full_text.split('\n')
-        parsed_rows = []
+        in_chantiers = False
         for line in lines:
-            if "KOESIO" in line.upper():
-                parsed_rows.append({"Texte Bruts": line.strip()})
-        return pd.DataFrame(parsed_rows)
+            if "SUIVI DES CHANTIERS" in line.upper() or "FOCUS ACTIONS" in line.upper():
+                in_chantiers = True
+            elif in_chantiers and line.strip().startswith(('•', '1.', '2.', '3.', '-')):
+                chantiers.append(line.strip())
+            elif in_chantiers and len(chantiers) > 0 and line.strip() == "":
+                in_chantiers = False
+                
+        return hist_data, chantiers
     except Exception as e:
-        st.error(f"Erreur lors de la lecture du PDF historique M-1: {e}")
-        return pd.DataFrame()
+        st.error(f"Erreur lors de la lecture du PDF historique : {e}")
+        return {}, []
 
-df_history_pdf = parse_pdf_history(file_history_input) if file_history_input and file_history_input.name.endswith('.pdf') else pd.DataFrame()
+dict_hist_m1, list_chantiers_m1 = parse_pdf_history_full(file_history_input) if file_history_input else ({}, [])
 
 # ------------------------------------------------------------------------------
 # 5. CHARGEMENT ET NETTOYAGE DES FICHIERS EXPORTS M
@@ -209,7 +230,6 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
         if tot_isi_brut > 0 and 'Statut de rapprochement' in sub_isi.columns:
             notes = sub_isi['Tampons / Notes / Conversations'].fillna('') if 'Tampons / Notes / Conversations' in sub_isi.columns else pd.Series('', index=sub_isi.index)
             
-            # Isolement archivage / FAF Artis
             no_rappro_mask = sub_isi['Statut de rapprochement'].isna()
             faf_artis_mask = notes.str.contains('FAF ARTIS|FAF_ARTIS', case=False, regex=True)
             
@@ -425,13 +445,15 @@ with tab1:
         st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
 
 # ==============================================================================
-# ONGLET 2 : CONSOLIDATION GROUPE
+# ONGLET 2 : CONSOLIDATION GROUPE ET COMPARATIF HISTORIQUE M-1
 # ==============================================================================
 with tab2:
     st.subheader("🌍 Consolidation Inter-Filiales — Groupe Koesio")
     
-    if not df_history_pdf.empty:
-        st.info("📜 **Lignes du Mail PDF M-1 détectées** : Comparaison active avec le rapport précédent.")
+    if dict_hist_m1:
+        st.success(f"📜 **Mail PDF M-1 chargé** : Données historiques extraites pour {len(dict_hist_m1)} filiales.")
+        if list_chantiers_m1:
+            st.info("⚙️ **Chantiers historiques M-1 identifiés :**\n" + "\n".join([f"• {c}" for c in list_chantiers_m1[:4]]))
     
     if not df_artis_filtered.empty and 'Organisation interne' in df_artis_filtered.columns:
         filiales_groupe = df_artis_filtered['Organisation interne'].dropna().unique().tolist()
@@ -480,6 +502,17 @@ with tab2:
             pct_att = (att_c / denom * 100) if denom > 0 else 0
             pct_pot = pct_a + pct_f
             
+            # CALCUL ÉVOLUTION M VS M-1
+            str_eval_auto = f"{pct_a:.1f}% ({auto_c})"
+            if dict_hist_m1:
+                # recherche correspondante filiale
+                for key_h, val_h in dict_hist_m1.items():
+                    if f.upper() in key_h.upper() or key_h.upper() in f.upper():
+                        delta_a = pct_a - val_h.get("auto_pct_m1", pct_a)
+                        symb = "↗️" if delta_a > 0 else "↘️" if delta_a < 0 else "➡️"
+                        str_eval_auto += f" [{symb} {delta_a:+.1f}% vs M-1]"
+                        break
+
             tot_vol_brut += vol_brut
             tot_ged_pure += ged_pure
             tot_vol_epure += vol_epure
@@ -494,7 +527,7 @@ with tab2:
                 "Vol. Brut GED": vol_brut,
                 "Flux GED Pure": ged_pure,
                 "Vol. Épuré": vol_epure,
-                "🤖 Rapprochement Auto": f"{pct_a:.1f}% ({auto_c})",
+                "🤖 Rapprochement Auto (Évolution M vs M-1)": str_eval_auto,
                 "🚚 Faux Manuel (Frais)": f"{pct_f:.1f}% ({faux_c})",
                 "🛠️ Vrai Manuel (Litiges)": f"{pct_v:.1f}% ({vrai_c})",
                 "⏳ En attente": f"{pct_att:.1f}% ({att_c})",
@@ -513,7 +546,7 @@ with tab2:
             "Vol. Brut GED": tot_vol_brut,
             "Flux GED Pure": tot_ged_pure,
             "Vol. Épuré": tot_vol_epure,
-            "🤖 Rapprochement Auto": f"{pct_tot_a:.1f}% ({tot_auto})",
+            "🤖 Rapprochement Auto (Évolution M vs M-1)": f"{pct_tot_a:.1f}% ({tot_auto})",
             "🚚 Faux Manuel (Frais)": f"{pct_tot_f:.1f}% ({tot_faux})",
             "🛠️ Vrai Manuel (Litiges)": f"{pct_tot_v:.1f}% ({tot_vrai})",
             "⏳ En attente": f"{pct_tot_att:.1f}% ({tot_att})",
@@ -576,17 +609,19 @@ with tab2:
             
         st.markdown("---")
         
-        st.markdown("### 📈 1. VISION GED / ISIWORK — Rapprochement National Consolidé")
+        st.markdown("### 📈 1. VISION GED / ISIWORK — Rapprochement National Consolidé (Évolutions)")
         st.dataframe(df_ged_groupe, hide_index=True, use_container_width=True)
         
         st.markdown("### 💻 2. VISION ERP ARTIS — Journal d'Intégration National Consolidé")
         st.dataframe(df_erp_groupe, hide_index=True, use_container_width=True)
         
         st.markdown("---")
-        st.markdown("### ✉️ Modèle de Mail National Consolidé (Prêt à copier)")
+        st.markdown("### ✉️ Modèle de Mail National Consolidé avec Historique (Prêt à copier)")
         
         table_ged_groupe_html = df_ged_groupe.to_html(index=False, border=1, classes='content-table')
         table_erp_groupe_html = df_erp_groupe.to_html(index=False, border=1, classes='content-table')
+        
+        txt_chantiers_html = "".join([f"<li>{c}</li>" for c in list_chantiers_m1]) if list_chantiers_m1 else "<li><b>Suivi des référentiels prix :</b> Action continue sur SHARP, ACTUAL SYSTEMES, KATUN FRANCE.</li><li><b>Correction TVA :</b> Suivi de la livraison de l'API Artis v2.</li>"
         
         mail_groupe_html = f"""
         <div style="font-family: Arial, sans-serif; font-size: 14px; color: #222; line-height: 1.5; padding: 10px; background-color: #ffffff; border-radius: 5px;">
@@ -596,7 +631,7 @@ with tab2:
             
             <p>Conformément à nos spécifications de pilotage Groupe validées en comité, ce rapport isole de manière stricte les flux qualifiés de <b>« GED Pure / FAF Artis »</b> (factures d'archivage directement traitées manuellement de bout en bout dans l'ERP) afin de ne pas fausser l'efficacité machine réelle de rapprochement de notre plateforme Isiwork.</p>
             
-            <h3 style="color: #0056b3; margin-top: 20px;">📈 1. VISION GED / ISIWORK — Rapprochement National</h3>
+            <h3 style="color: #0056b3; margin-top: 20px;">📈 1. VISION GED / ISIWORK — Rapprochement National & Évolutions M-1</h3>
             {table_ged_groupe_html}
             
             <h3 style="color: #0056b3; margin-top: 20px;">💻 2. VISION ERP ARTIS — Journal d'Intégration National</h3>
@@ -605,10 +640,9 @@ with tab2:
             <h3 style="color: #0056b3; margin-top: 20px;">🔍 3. FOCUS ACTIONS — Enseignements Clés du Groupe</h3>
             <p><b>• Alerte Référentiels Prix :</b> L'analyse des blocages « Vrais Manuels » montre que la charge de traitement réside principalement sur un problème de mise à jour tarifaire en amont sur nos partenaires stratégiques (TD SYNNEX, ACTUAL SYSTEMES, CANON FRANCE, SHARP).</p>
             
-            <h3 style="color: #0056b3; margin-top: 20px;">⚙️ 4. SUIVI DES CHANTIERS TECHNIQUES TRANSVERSAUX</h3>
+            <h3 style="color: #0056b3; margin-top: 20px;">⚙️ 4. SUIVI DES CHANTIERS TECHNIQUES & PERSPECTIVES (Rappel M-1 & Avancées)</h3>
             <ul>
-                <li><b>Le levier majeur des « Faux Manuels » (Frais Annexes) :</b> Représentant une part importante de notre volumétrie, la saisie anticipée des frais de port et DEEE sur les commandes/BL éliminera immédiatement cette charge humaine.</li>
-                <li><b>Stabilité Batch ERP :</b> Le taux d'injection automatique national atteint <b>{pct_tot_batch:.1f}%</b>, confirmant la robustesse du traitement automatique dans Artis.</li>
+                {txt_chantiers_html}
             </ul>
             
             <p>Cordialement,</p>
