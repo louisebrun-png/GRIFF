@@ -341,7 +341,7 @@ b) Top des fournisseurs concernés par des "Faux Manuels" (Ajustements Frais de 
 
 4. Suivi des chantiers techniques et conclusion
 • Stabilité opérationnelle de l'ERP: L'injection finale en comptabilité confirme la performance du batch automatique sans intervention utilisateur.
-• Levier "Frais Annexes": Les Faux Manuels s'expliquent par l'absence des lignes de frais de port ou DEEE sur la commande ou le BL initial. L'intégration de ces frais dès la création de la commande ou lors du rapprochement du BL permettra d'éliminer ces blocages et de sécuriser le rapprochement automatique.
+• Levier "Frais Annexes": Les Faux Manuels s'expliquent par l'absence des lignes de frais de port ou DEEE sur la commande d'achat ou le BL initial. Au niveau d'Isiwork, il est alors trop tard pour automatiser. Pour éliminer ces blocages, ces frais doivent impérativement être saisis en amont lors de la création de la commande ou de la réception du BL dans Artis.
 
 Nous restons à votre entière disposition pour échanger sur ce bilan.
 
@@ -361,4 +361,3 @@ Potentiale
 with tab2:
     st.subheader("🌍 Consolidation Inter-Filiales Koesio")
     st.info("Cet onglet permettra de consolider l'ensemble des filiales lorsque plusieurs fichiers seront chargés simultanément.")
-    
