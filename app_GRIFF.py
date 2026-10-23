@@ -139,7 +139,7 @@ def parse_pdf_history_full(pdf_file):
 dict_hist_m1, list_chantiers_m1 = parse_pdf_history_full(file_history_input) if file_history_input else ({}, [])
 
 # ------------------------------------------------------------------------------
-# 6. CHARGEMENT ET DÉTECTION ROBUSTE DES FICHIERS PAR SIGNATURE ZEENDOC
+# 6. CHARGEMENT ET DÉTECTION ROBUSTE DES FICHIERS
 # ------------------------------------------------------------------------------
 @st.cache_data(show_spinner="Analyse rapide des fichiers Excel...")
 def load_all_data(uploaded_files):
@@ -532,9 +532,11 @@ with tab2:
             if 'Organisation_Zeendoc' in df_isiwork_filtered.columns:
                 mask_isi = pd.Series(False, index=df_isiwork_filtered.index)
                 
-                if "NORD" in f.upper() and "OUEST" in f.upper():
-                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("NORD", case=False, na=False) & df_isiwork_filtered['Organisation_Zeendoc'].str.contains("OUEST", case=False, na=False)
-                elif "OUEST" in f.upper():
+                # Regle stricte Nord-Ouest / Nord OUEST vs Ouest
+                f_clean = f.upper().replace("-", " ")
+                if "NORD" in f_clean and "OUEST" in f_clean:
+                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("NORD", case=False, na=False)
+                elif "OUEST" in f_clean:
                     mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("OUEST", case=False, na=False) & ~df_isiwork_filtered['Organisation_Zeendoc'].str.contains("NORD", case=False, na=False)
                 else:
                     target_aliases = mapping_zeendoc.get(f.upper(), [f.upper()])
@@ -606,7 +608,7 @@ with tab2:
                 "pct_pot": pct_pot
             })
 
-        # TRI DE TABLEAU 1 : % RAPPROCHEMENT AUTO DESCENDANT, PUIS VOL. ÉPURÉ DESCENDANT
+        # TRI : % RAPPROCHEMENT AUTO DESCENDANT, PUIS VOL. ÉPURÉ DESCENDANT
         df_ged_temp = pd.DataFrame(rows_ged_raw)
         df_ged_temp = df_ged_temp.sort_values(by=["pct_a", "Vol. Épuré"], ascending=[False, False]).reset_index(drop=True)
         
