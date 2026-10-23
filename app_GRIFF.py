@@ -39,7 +39,6 @@ def reset_application():
 # ------------------------------------------------------------------------------
 # 3. BARRE LATÉRALE (SIDEBAR) : LOGO, TITRE CLAIR & RAZ
 # ------------------------------------------------------------------------------
-# Logo Potentiale tout en haut
 logo_path = "LOGO-SD-Long-Image+Nom.png"
 if os.path.exists(logo_path):
     st.sidebar.image(logo_path, use_container_width=True)
@@ -47,7 +46,6 @@ if os.path.exists(logo_path):
 st.sidebar.header("📂 Chargement des exports mensuels")
 st.sidebar.markdown("Téléversez vos fichiers d'exports du mois pour générer l'analyse.")
 
-# Bouton de remise à zéro
 if st.sidebar.button("🔄 Remise à zéro (RAZ)", use_container_width=True, type="secondary"):
     reset_application()
 
@@ -141,7 +139,7 @@ def parse_pdf_history_full(pdf_file):
 dict_hist_m1, list_chantiers_m1 = parse_pdf_history_full(file_history_input) if file_history_input else ({}, [])
 
 # ------------------------------------------------------------------------------
-# 6. CHARGEMENT ET DÉTECTION ROBUSTE DES FICHIERS
+# 6. CHARGEMENT ET DÉTECTION PAR CONTENU DE FICHIER (ZEENDOC HEADERS)
 # ------------------------------------------------------------------------------
 @st.cache_data
 def load_all_data(uploaded_files):
@@ -158,6 +156,14 @@ def load_all_data(uploaded_files):
             is_isiwork = False
             header_row = 0
             
+            # 1. Extraction du nom d'organisation Zeendoc dans les premières lignes
+            row_0_str = " ".join([str(v) for v in df_temp.iloc[0].values if pd.notna(v)]).strip() if len(df_temp) > 0 else ""
+            row_1_str = " ".join([str(v) for v in df_temp.iloc[1].values if pd.notna(v)]).strip() if len(df_temp) > 1 else ""
+            
+            # Identification dynamique de l'entité
+            entite_detectee = row_0_str if row_0_str else file.name
+            
+            # Detection Isiwork via structure d'en-tête
             for idx, row in df_temp.iloc[:10].iterrows():
                 row_str = " ".join([str(v) for v in row.values if pd.notna(v)])
                 if 'Statut de rapprochement' in row_str or 'Identifiant' in row_str:
@@ -170,6 +176,9 @@ def load_all_data(uploaded_files):
                     df_isi = pd.read_excel(file, header=header_row)
                 else:
                     df_isi = pd.read_csv(file, header=header_row)
+                
+                # Tag de l'organisation d'origine
+                df_isi['Organisation_Zeendoc'] = entite_detectee
                 isi_list.append(df_isi)
             else:
                 if file.name.endswith('.xlsx'):
@@ -236,7 +245,6 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
         sub_art = df_art[df_art['Mois_Period'] == p] if 'Mois_Period' in df_art else pd.DataFrame()
         sub_isi = df_isi[df_isi['Mois_Period'] == p] if 'Mois_Period' in df_isi else pd.DataFrame()
         
-        # ARTIS (ERP)
         tot_art = len(sub_art)
         if tot_art > 0 and 'Statut' in sub_art.columns:
             art_batch = len(sub_art[sub_art['Statut'] == 'Bon à payer'])
@@ -246,7 +254,6 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
         else:
             art_batch, art_man, pct_batch, pct_man = 0, 0, 0.0, 0.0
 
-        # ISIWORK (GED)
         tot_isi_brut = len(sub_isi)
         if tot_isi_brut > 0 and 'Statut de rapprochement' in sub_isi.columns:
             auto_c = len(sub_isi[sub_isi['Statut de rapprochement'] == 'Rapproché automatiquement'])
@@ -484,7 +491,7 @@ with tab1:
         st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
 
 # ==============================================================================
-# ONGLET 2 : CONSOLIDATION GROUPE
+# ONGLET 2 : CONSOLIDATION GROUPE (MAPPING INTELLIGENT PAR CONTENU ZEENDOC)
 # ==============================================================================
 with tab2:
     st.subheader("🌍 Consolidation Inter-Filiales — Groupe Koesio")
@@ -508,37 +515,70 @@ with tab2:
         tot_vrai = 0
         tot_att = 0
         
+        # MAPPING DES ENTITÉS ZEENDOC VERS FILIALES ARTIS
+        mapping_zeendoc = {
+            "KOESIO EST": ["EST"],
+            "KOESIO OUEST": ["OUEST"],
+            "KOESIO MED": ["MED", "MEDITERRANEE"],
+            "RHONE ALPES REPRO INFORMATIQUE": ["2IT", "2IT SOLUTIONS"],
+            "ESUS": ["CENTRE EST", "CEE"],
+            "KOESIO PACA": ["PACA"],
+            "KOESIO NORD OUEST": ["KNO", "NORD OUEST"],
+            "KOESIO ILE DE FRANCE": ["IDF", "ILE DE FRANCE"],
+            "KOESIO OCCITANIE": ["OCC", "OCCITANIE"],
+            "EOLE": ["EOLE"]
+        }
+        
         for idx, f in enumerate(filiales_groupe, start=1):
             sub_art_f = df_artis_filtered[df_artis_filtered['Organisation interne'] == f]
-            sub_isi_f = df_isiwork_filtered[df_isiwork_filtered['Organisation interne'] == f] if 'Organisation interne' in df_isiwork_filtered.columns else df_isiwork_filtered
+            
+            # FILTRAGE DU BLOC ISIWORK CORRESPONDANT À LA FILIALE
+            if 'Organisation_Zeendoc' in df_isiwork_filtered.columns:
+                # Recherche directe ou par alias d'entité
+                mask_isi = pd.Series(False, index=df_isiwork_filtered.index)
+                
+                for z_org, alias_list in mapping_zeendoc.items():
+                    if any(alias in f.upper() for alias in alias_list) or f.upper() in z_org.upper():
+                        mask_isi |= df_isiwork_filtered['Organisation_Zeendoc'].str.contains(re.escape(z_org), case=False, na=False)
+                
+                # Fallback : recherche par mots clés du nom de filiale
+                kw = f.replace("KOESIO", "").strip()
+                if kw and not mask_isi.any():
+                    mask_isi |= df_isiwork_filtered['Organisation_Zeendoc'].str.contains(re.escape(kw), case=False, na=False)
+                    
+                sub_isi_f = df_isiwork_filtered[mask_isi].copy()
+            else:
+                sub_isi_f = pd.DataFrame()
             
             vol_brut = len(sub_isi_f)
             tot_art_f = len(sub_art_f)
             
-            auto_c = len(sub_isi_f[sub_isi_f['Statut de rapprochement'] == 'Rapproché automatiquement']) if 'Statut de rapprochement' in sub_isi_f.columns else 0
-            not_auto_mask = sub_isi_f['Statut de rapprochement'] != 'Rapproché automatiquement' if 'Statut de rapprochement' in sub_isi_f.columns else pd.Series(True, index=sub_isi_f.index)
-            
-            notes_f = sub_isi_f['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in sub_isi_f.columns else pd.Series('', index=sub_isi_f.index)
-            export_erp_f = sub_isi_f['Date export ERP'].fillna('').astype(str) if 'Date export ERP' in sub_isi_f.columns else pd.Series('', index=sub_isi_f.index)
-            
-            pattern_ged_pure = 'FAF|TRAIT|ARTIS|ARCHIV|DÉJÀ TRAITÉ'
-            is_faf = notes_f.str.contains(pattern_ged_pure, case=False, regex=True) | export_erp_f.str.contains(pattern_ged_pure, case=False, regex=True) | sub_isi_f['Statut de rapprochement'].isna()
-            
-            ged_pure_mask = not_auto_mask & is_faf
-            ged_pure = ged_pure_mask.sum()
-            
-            vol_epure = max(0, vol_brut - ged_pure)
-            
-            sub_isi_f_epure = sub_isi_f[~ged_pure_mask].copy()
-            
-            df_man_f_epure = sub_isi_f_epure[sub_isi_f_epure['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)].copy() if 'Statut de rapprochement' in sub_isi_f_epure.columns else pd.DataFrame()
-            notes_f_epure = df_man_f_epure['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in df_man_f_epure.columns else pd.Series('', index=df_man_f_epure.index)
-            
-            faux_c = len(df_man_f_epure[notes_f_epure.str.contains('FRAIS|PORT|D3EE|DEEE', case=False, regex=True)]) if not df_man_f_epure.empty else 0
-            vrai_c = max(0, len(df_man_f_epure) - faux_c)
-            
-            att_c = max(0, vol_epure - (auto_c + faux_c + vrai_c))
-            
+            if vol_brut > 0 and 'Statut de rapprochement' in sub_isi_f.columns:
+                auto_c = len(sub_isi_f[sub_isi_f['Statut de rapprochement'] == 'Rapproché automatiquement'])
+                not_auto_mask = sub_isi_f['Statut de rapprochement'] != 'Rapproché automatiquement'
+                
+                notes_f = sub_isi_f['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in sub_isi_f.columns else pd.Series('', index=sub_isi_f.index)
+                export_erp_f = sub_isi_f['Date export ERP'].fillna('').astype(str) if 'Date export ERP' in sub_isi_f.columns else pd.Series('', index=sub_isi_f.index)
+                
+                pattern_ged_pure = 'FAF|TRAIT|ARTIS|ARCHIV|DÉJÀ TRAITÉ'
+                is_faf = notes_f.str.contains(pattern_ged_pure, case=False, regex=True) | export_erp_f.str.contains(pattern_ged_pure, case=False, regex=True) | sub_isi_f['Statut de rapprochement'].isna()
+                
+                ged_pure_mask = not_auto_mask & is_faf
+                ged_pure = ged_pure_mask.sum()
+                
+                vol_epure = max(0, vol_brut - ged_pure)
+                
+                sub_isi_f_epure = sub_isi_f[~ged_pure_mask].copy()
+                
+                df_man_f_epure = sub_isi_f_epure[sub_isi_f_epure['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)].copy() if 'Statut de rapprochement' in sub_isi_f_epure.columns else pd.DataFrame()
+                notes_f_epure = df_man_f_epure['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in df_man_f_epure.columns else pd.Series('', index=df_man_f_epure.index)
+                
+                faux_c = len(df_man_f_epure[notes_f_epure.str.contains('FRAIS|PORT|D3EE|DEEE', case=False, regex=True)]) if not df_man_f_epure.empty else 0
+                vrai_c = max(0, len(df_man_f_epure) - faux_c)
+                att_c = max(0, vol_epure - (auto_c + faux_c + vrai_c))
+            else:
+                auto_c, faux_c, vrai_c, ged_pure, att_c, vol_epure = 0, 0, 0, 0, 0, 0
+
             denom = vol_epure if vol_epure > 0 else 1
             
             pct_a = (auto_c / denom * 100) if vol_epure > 0 else 0
