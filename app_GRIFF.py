@@ -6,6 +6,7 @@
 
 import streamlit as st
 import pandas as pd
+import plotly.express as px
 
 # ------------------------------------------------------------------------------
 # 1. CONFIGURATION DE LA PAGE STREAMLIT
@@ -31,7 +32,7 @@ st.info(
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION AVEC DÉTECTION AUTO DES TYPES
+# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION MULTI-FILIALES
 # ------------------------------------------------------------------------------
 st.sidebar.header("📂 Ingestion des Données")
 st.sidebar.markdown("Téléversez vos exports mensuels pour lancer le calcul automatisé.")
@@ -40,14 +41,14 @@ files_isiwork_input = st.sidebar.file_uploader(
     "Exports Isiwork / Zeendoc (.xlsx, .csv)",
     type=["xlsx", "csv"],
     accept_multiple_files=True,
-    help="Export Zeendoc contenant la colonne 'Statut de rapprochement'."
+    help="Exports Zeendoc de vos différentes filiales."
 )
 
 files_artis_input = st.sidebar.file_uploader(
     "Exports Artis ERP (.xlsx, .csv)",
     type=["xlsx", "csv"],
     accept_multiple_files=True,
-    help="Export de la recherche des factures fournisseurs Artis."
+    help="Exports Artis ERP de vos différentes filiales."
 )
 
 all_uploaded_files = (files_isiwork_input or []) + (files_artis_input or [])
@@ -104,7 +105,7 @@ def load_all_data(uploaded_files):
 df_isiwork, df_artis = load_all_data(all_uploaded_files)
 
 # ------------------------------------------------------------------------------
-# 5. DÉTECTION DYNAMIQUE DE LA FILIALE
+# 5. DÉTECTION DYNAMIQUE DE LA FILIALE EN VISION INDIVIDUELLE
 # ------------------------------------------------------------------------------
 def detect_filiale(df_art):
     if not df_art.empty and 'Organisation interne' in df_art.columns:
@@ -116,7 +117,7 @@ def detect_filiale(df_art):
 filiale_detectee = detect_filiale(df_artis)
 
 # ------------------------------------------------------------------------------
-# 6. CALCULS ET VENTILATION PAR MOIS (AVEC EMOJIS STYLE EN-TÊTE)
+# 6. CALCULS ET VENTILATION PAR MOIS
 # ------------------------------------------------------------------------------
 mois_fr = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
@@ -380,8 +381,196 @@ with tab1:
         st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
 
 # ==============================================================================
-# ONGLET 2 : CONSOLIDATION GROUPE
+# ONGLET 2 : CONSOLIDATION GROUPE (CONFORME AU RAPPORT NATIONAL)
 # ==============================================================================
 with tab2:
-    st.subheader("🌍 Consolidation Inter-Filiales Koesio")
-    st.info("Cet onglet permettra de consolider l'ensemble des filiales lorsque plusieurs fichiers seront chargés simultanément.")
+    st.subheader("🌍 Consolidation Inter-Filiales — Groupe Koesio")
+    
+    if not df_artis_filtered.empty and 'Organisation interne' in df_artis_filtered.columns:
+        filiales_groupe = df_artis_filtered['Organisation interne'].dropna().unique().tolist()
+        
+        st.success(f"🏢 **{len(filiales_groupe)} filiales actives chargées** : {', '.join(map(str, filiales_groupe))}")
+        
+        # 1. CONSTRUCTION TABLEAU VISION GED GROUPE
+        rows_ged_groupe = []
+        tot_vol_brut = 0
+        tot_ged_pure = 0
+        tot_vol_epure = 0
+        tot_auto = 0
+        tot_faux = 0
+        tot_vrai = 0
+        tot_att = 0
+        
+        for idx, f in enumerate(filiales_groupe, start=1):
+            sub_art_f = df_artis_filtered[df_artis_filtered['Organisation interne'] == f]
+            sub_isi_f = df_isiwork_filtered[df_isiwork_filtered['Organisation interne'] == f] if 'Organisation interne' in df_isiwork_filtered.columns else df_isiwork_filtered
+            
+            vol_brut = len(sub_isi_f)
+            tot_art_f = len(sub_art_f)
+            
+            notes = sub_isi_f['Tampons / Notes / Conversations'].fillna('') if 'Tampons / Notes / Conversations' in sub_isi_f.columns else pd.Series('', index=sub_isi_f.index)
+            
+            faf_cnt = len(sub_isi_f[notes.str.contains('FAF ARTIS|FAF_ARTIS', case=False, regex=True)])
+            gap_cnt = max(0, tot_art_f - vol_brut) if tot_art_f > vol_brut else 0
+            ged_pure = gap_cnt + faf_cnt
+            
+            vol_epure = max(0, vol_brut - ged_pure)
+            
+            auto_c = len(sub_isi_f[sub_isi_f['Statut de rapprochement'] == 'Rapproché automatiquement']) if 'Statut de rapprochement' in sub_isi_f.columns else 0
+            faux_c = len(sub_isi_f[notes.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
+            
+            man_tot = len(sub_isi_f[sub_isi_f['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)]) if 'Statut de rapprochement' in sub_isi_f.columns else 0
+            vrai_c = max(0, man_tot - (faux_c + faf_cnt))
+            
+            att_c = max(0, vol_brut - (auto_c + faux_c + vrai_c + faf_cnt))
+            
+            pct_a = (auto_c / vol_epure * 100) if vol_epure > 0 else 0
+            pct_f = (faux_c / vol_epure * 100) if vol_epure > 0 else 0
+            pct_v = (vrai_c / vol_epure * 100) if vol_epure > 0 else 0
+            pct_att = (att_c / vol_epure * 100) if vol_epure > 0 else 0
+            pct_pot = pct_a + pct_f
+            
+            tot_vol_brut += vol_brut
+            tot_ged_pure += ged_pure
+            tot_vol_epure += vol_epure
+            tot_auto += auto_c
+            tot_faux += faux_c
+            tot_vrai += vrai_c
+            tot_att += att_c
+            
+            rows_ged_groupe.append({
+                "Rang": idx,
+                "Filiale Groupe": f,
+                "Vol. Brut GED": vol_brut,
+                "Flux GED Pure": ged_pure,
+                "Vol. Épuré": vol_epure,
+                "🤖 Rapprochement Auto": f"{pct_a:.1f}% ({auto_c})",
+                "🚚 Faux Manuel (Frais)": f"{pct_f:.1f}% ({faux_c})",
+                "🛠️ Vrai Manuel (Litiges)": f"{pct_v:.1f}% ({vrai_c})",
+                "⏳ En attente": f"{pct_att:.1f}% ({att_c})",
+                "🎯 Potentiel Cible": f"{pct_pot:.1f}%"
+            })
+            
+        # Ligne TOTAL CONSOLIDÉ
+        pct_tot_a = (tot_auto / tot_vol_epure * 100) if tot_vol_epure > 0 else 0
+        pct_tot_f = (tot_faux / tot_vol_epure * 100) if tot_vol_epure > 0 else 0
+        pct_tot_v = (tot_vrai / tot_vol_epure * 100) if tot_vol_epure > 0 else 0
+        pct_tot_att = (tot_att / tot_vol_epure * 100) if tot_vol_epure > 0 else 0
+        
+        rows_ged_groupe.append({
+            "Rang": "—",
+            "Filiale Groupe": "TOTAL GROUPE CONSOLIDÉ",
+            "Vol. Brut GED": tot_vol_brut,
+            "Flux GED Pure": tot_ged_pure,
+            "Vol. Épuré": tot_vol_epure,
+            "🤖 Rapprochement Auto": f"{pct_tot_a:.1f}% ({tot_auto})",
+            "🚚 Faux Manuel (Frais)": f"{pct_tot_f:.1f}% ({tot_faux})",
+            "🛠️ Vrai Manuel (Litiges)": f"{pct_tot_v:.1f}% ({tot_vrai})",
+            "⏳ En attente": f"{pct_tot_att:.1f}% ({tot_att})",
+            "🎯 Potentiel Cible": f"{(pct_tot_a + pct_tot_f):.1f}%"
+        })
+        
+        df_ged_groupe = pd.DataFrame(rows_ged_groupe)
+        
+        # 2. CONSTRUCTION TABLEAU VISION ERP GROUPE
+        rows_erp_groupe = []
+        tot_art_all = 0
+        tot_batch_all = 0
+        tot_man_all = 0
+        
+        for idx, f in enumerate(filiales_groupe, start=1):
+            sub_art_f = df_artis_filtered[df_artis_filtered['Organisation interne'] == f]
+            tot_art_f = len(sub_art_f)
+            
+            if tot_art_f > 0 and 'Statut' in sub_art_f.columns:
+                batch_c = len(sub_art_f[sub_art_f['Statut'] == 'Bon à payer'])
+                man_c = tot_art_f - batch_c
+                pct_b = (batch_c / tot_art_f) * 100
+                pct_m = (man_c / tot_art_f) * 100
+            else:
+                batch_c, man_c, pct_b, pct_m = 0, 0, 0.0, 0.0
+                
+            tot_art_all += tot_art_f
+            tot_batch_all += batch_c
+            tot_man_all += man_c
+            
+            rows_erp_groupe.append({
+                "Rang": idx,
+                "Filiale Groupe": f,
+                "Total Pièces Validées Artis": tot_art_f,
+                "🤖 Batch Automatique (admin)": f"{pct_b:.1f}% ({batch_c})",
+                "👤 Saisie / Reprise Manuelle": f"{pct_m:.1f}% ({man_c})"
+            })
+            
+        pct_tot_batch = (tot_batch_all / tot_art_all * 100) if tot_art_all > 0 else 0
+        pct_tot_man_erp = (tot_man_all / tot_art_all * 100) if tot_art_all > 0 else 0
+        
+        rows_erp_groupe.append({
+            "Rang": "—",
+            "Filiale Groupe": "TOTAL ERP CONSOLIDÉ",
+            "Total Pièces Validées Artis": tot_art_all,
+            "🤖 Batch Automatique (admin)": f"{pct_tot_batch:.1f}% ({tot_batch_all})",
+            "👤 Saisie / Reprise Manuelle": f"{pct_tot_man_erp:.1f}% ({tot_man_all})"
+        })
+        
+        df_erp_groupe = pd.DataFrame(rows_erp_groupe)
+        
+        # 3. AFFICHAGE DES KPI & TABLEAUX GROUPE
+        g1, g2, g3, g4 = st.columns(4)
+        with g1:
+            st.metric("Total Factures Artis Groupe", f"{tot_art_all:,}".replace(',', ' '))
+        with g2:
+            st.metric("Total Factures Isiwork Groupe", f"{tot_vol_brut:,}".replace(',', ' '))
+        with g3:
+            st.metric("Taux Injection Batch ERP Groupe", f"{pct_tot_batch:.1f}%")
+        with g4:
+            st.metric("Rapprochement Auto GED Groupe", f"{pct_tot_a:.1f}%")
+            
+        st.markdown("---")
+        
+        st.markdown("### 📈 1. VISION GED / ISIWORK — Rapprochement National Consolidé")
+        st.dataframe(df_ged_groupe, hide_index=True, use_container_width=True)
+        
+        st.markdown("### 💻 2. VISION ERP ARTIS — Journal d'Intégration National Consolidé")
+        st.dataframe(df_erp_groupe, hide_index=True, use_container_width=True)
+        
+        st.markdown("---")
+        st.markdown("### ✉️ Modèle de Mail National Consolidé (Prêt à copier)")
+        
+        table_ged_groupe_html = df_ged_groupe.to_html(index=False, border=1, classes='content-table')
+        table_erp_groupe_html = df_erp_groupe.to_html(index=False, border=1, classes='content-table')
+        
+        mail_groupe_html = f"""
+        <div style="font-family: Arial, sans-serif; font-size: 14px; color: #222; line-height: 1.5; padding: 10px; background-color: #ffffff; border-radius: 5px;">
+            <p>Bonjour à tous,</p>
+            
+            <p>Dans le cadre du suivi technique et opérationnel de notre projet de transition de la saisie manuelle vers le pilotage financier automatique, vous trouverez ci-dessous le rapport national récapitulatif consolidé pour l'ensemble de nos filiales actives du Groupe Koesio pour la période de <b>{periode_globale}</b>.</p>
+            
+            <p>Conformément à nos spécifications de pilotage Groupe validées en comité, ce rapport isole de manière stricte les flux qualifiés de <b>« GED Pure / FAF Artis »</b> (factures d'archivage directement traitées manuellement de bout en bout dans l'ERP) afin de ne pas fausser l'efficacité machine réelle de rapprochement de notre plateforme Isiwork.</p>
+            
+            <h3 style="color: #0056b3; margin-top: 20px;">📈 1. VISION GED / ISIWORK — Rapprochement National</h3>
+            {table_ged_groupe_html}
+            
+            <h3 style="color: #0056b3; margin-top: 20px;">💻 2. VISION ERP ARTIS — Journal d'Intégration National</h3>
+            {table_erp_groupe_html}
+            
+            <h3 style="color: #0056b3; margin-top: 20px;">🔍 3. FOCUS ACTIONS — Enseignements Clés du Groupe</h3>
+            <p><b>• Alerte Référentiels Prix :</b> L'analyse des blocages « Vrais Manuels » montre que la charge de traitement réside principalement sur un problème de mise à jour tarifaire en amont sur nos partenaires stratégiques (TD SYNNEX, ACTUAL SYSTEMES, CANON FRANCE, SHARP).</p>
+            
+            <h3 style="color: #0056b3; margin-top: 20px;">⚙️ 4. SUIVI DES CHANTIERS TECHNIQUES TRANSVERSAUX</h3>
+            <ul>
+                <li><b>Le levier majeur des « Faux Manuels » (Frais Annexes) :</b> Représentant une part importante de notre volumétrie, la saisie anticipée des frais de port et DEEE sur les commandes/BL éliminera immédiatement cette charge humaine.</li>
+                <li><b>Stabilité Batch ERP :</b> Le taux d'injection automatique national atteint <b>{pct_tot_batch:.1f}%</b>, confirmant la robustesse du traitement automatique dans Artis.</li>
+            </ul>
+            
+            <p>Cordialement,</p>
+            <p><b>Louise BRUN</b><br>
+            Chef de projet pour KOESIO GROUPE & KAM<br>
+            Potentiale</p>
+        </div>
+        """
+        
+        st.components.v1.html(mail_groupe_html, height=850, scrolling=True)
+        
+    else:
+        st.warning("👈 Téléversez les fichiers de vos différentes filiales dans la barre latérale pour afficher la consolidation groupe.")
