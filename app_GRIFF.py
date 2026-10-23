@@ -38,7 +38,7 @@ st.info(
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION AVEC DÉTECTION AUTO
+# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION MULTI-FICHIERS
 # ------------------------------------------------------------------------------
 st.sidebar.header("📂 Ingestion des Données M (Mois en cours)")
 st.sidebar.markdown("Téléversez vos exports mensuels pour lancer le calcul automatisé.")
@@ -47,7 +47,7 @@ files_isiwork_input = st.sidebar.file_uploader(
     "Exports Isiwork / Zeendoc (.xlsx, .csv)",
     type=["xlsx", "csv"],
     accept_multiple_files=True,
-    help="Exports Zeendoc de vos différentes filiales."
+    help="Exports Zeendoc de vos différentes filiales (plusieurs fichiers acceptés)."
 )
 
 files_artis_input = st.sidebar.file_uploader(
@@ -113,7 +113,7 @@ def parse_pdf_history_full(pdf_file):
 dict_hist_m1, list_chantiers_m1 = parse_pdf_history_full(file_history_input) if file_history_input else ({}, [])
 
 # ------------------------------------------------------------------------------
-# 5. CHARGEMENT ET NETTOYAGE DES FICHIERS EXPORTS M
+# 5. CHARGEMENT ET DÉTECTION ROBUSTE DES FICHIERS
 # ------------------------------------------------------------------------------
 @st.cache_data
 def load_all_data(uploaded_files):
@@ -127,32 +127,30 @@ def load_all_data(uploaded_files):
             else:
                 df_temp = pd.read_csv(file, header=None)
                 
-            is_artis = False
-            for idx, row in df_temp.iloc[:5].iterrows():
-                row_str = " ".join(map(str, row.values))
-                if 'Raison sociale' in row_str or 'Organisation interne' in row_str or 'Code fournisseur' in row_str:
-                    is_artis = True
+            is_isiwork = False
+            header_row = 0
+            
+            # Détection spécifique Isiwork
+            for idx, row in df_temp.iloc[:10].iterrows():
+                row_str = " ".join([str(v) for v in row.values if pd.notna(v)])
+                if 'Statut de rapprochement' in row_str or 'Identifiant' in row_str:
+                    is_isiwork = True
+                    header_row = idx
                     break
             
-            if is_artis:
+            if is_isiwork:
+                if file.name.endswith('.xlsx'):
+                    df_isi = pd.read_excel(file, header=header_row)
+                else:
+                    df_isi = pd.read_csv(file, header=header_row)
+                isi_list.append(df_isi)
+            else:
+                # Fichier Artis ERP
                 if file.name.endswith('.xlsx'):
                     df_art = pd.read_excel(file)
                 else:
                     df_art = pd.read_csv(file)
                 art_list.append(df_art)
-            else:
-                header_row = 0
-                for idx, row in df_temp.iterrows():
-                    if 'Statut de rapprochement' in row.values or 'Identifiant' in row.values or 'Date facture' in row.values:
-                        header_row = idx
-                        break
-                
-                if file.name.endswith('.xlsx'):
-                    df_isi = pd.read_excel(file, header=header_row)
-                else:
-                    df_isi = pd.read_csv(file, header=header_row)
-                    
-                isi_list.append(df_isi)
                 
         except Exception as e:
             st.error(f"Erreur lors de la lecture de {file.name}: {e}")
@@ -177,7 +175,7 @@ def detect_filiale(df_art):
 filiale_detectee = detect_filiale(df_artis)
 
 # ------------------------------------------------------------------------------
-# 7. CALCULS ET VENTILATION PAR MOIS (RÈGLE STRICTE : AUTO INTACT)
+# 7. CALCULS ET VENTILATION PAR MOIS (ROBUSTE MULTI-FILES)
 # ------------------------------------------------------------------------------
 mois_fr = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
@@ -225,23 +223,20 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
         # ISIWORK (GED)
         tot_isi_brut = len(sub_isi)
         if tot_isi_brut > 0 and 'Statut de rapprochement' in sub_isi.columns:
-            # 1. RAPPROCHEMENT AUTO : TOUJOURS STRICTEMENT INTACT ET INTEGRAL
+            # 1. Rapproché automatiquement (toujours intact)
             auto_c = len(sub_isi[sub_isi['Statut de rapprochement'] == 'Rapproché automatiquement'])
             
-            # 2. ISOLEMENT DES FLUX GED PURE UNIQUE SUR LES RAPPROCHÉS MANUELLEMENT
+            # 2. Isolement des pièces en Rapproché manuellement
             df_man_only = sub_isi[sub_isi['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)].copy()
             notes_man = df_man_only['Tampons / Notes / Conversations'].fillna('') if 'Tampons / Notes / Conversations' in df_man_only.columns else pd.Series('', index=df_man_only.index)
             
-            # Détection FAF Artis / Traité ERP / Archivage dans les manuels
             faf_mask = notes_man.str.contains('FAF ARTIS|FAF_ARTIS|TRAIT|ARCHIV', case=False, regex=True)
             no_rappro_count = sub_isi['Statut de rapprochement'].isna().sum()
             
             ged_pure_c = faf_mask.sum() + no_rappro_count
             
-            # Volumétrie Épurée GED = Vol Brut - GED Pure
             vol_epure = max(0, tot_isi_brut - ged_pure_c)
             
-            # Faux Manuel (Frais / Port / DEEE) au sein des manuels non-FAF
             df_man_epure = df_man_only[~faf_mask].copy()
             notes_man_epure = df_man_epure['Tampons / Notes / Conversations'].fillna('') if 'Tampons / Notes / Conversations' in df_man_epure.columns else pd.Series('', index=df_man_epure.index)
             
