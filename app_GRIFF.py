@@ -6,8 +6,14 @@
 
 import streamlit as st
 import pandas as pd
-import pypdf
 import re
+
+# Import sécurisé de pypdf sans faire planter l'application
+try:
+    import pypdf
+    HAS_PYPDF = True
+except ImportError:
+    HAS_PYPDF = False
 
 # ------------------------------------------------------------------------------
 # 1. CONFIGURATION DE LA PAGE STREAMLIT
@@ -64,11 +70,11 @@ file_history_input = st.sidebar.file_uploader(
 all_uploaded_files = (files_isiwork_input or []) + (files_artis_input or [])
 
 # ------------------------------------------------------------------------------
-# 4. PARSER HISTORIQUE DEPUIS LE MAIL PDF
+# 4. PARSER HISTORIQUE DEPUIS LE MAIL PDF (SÉCURISÉ)
 # ------------------------------------------------------------------------------
 @st.cache_data
 def parse_pdf_history(pdf_file):
-    if not pdf_file:
+    if not pdf_file or not HAS_PYPDF:
         return pd.DataFrame()
     try:
         reader = pypdf.PdfReader(pdf_file)
@@ -76,7 +82,6 @@ def parse_pdf_history(pdf_file):
         for page in reader.pages:
             full_text += page.extract_text() + "\n"
             
-        # Détection des lignes de filiales dans le PDF
         lines = full_text.split('\n')
         parsed_rows = []
         for line in lines:
