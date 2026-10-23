@@ -1,6 +1,6 @@
 # ==============================================================================
 # APPLICATION : GRIFF — Tour de Contrôle Koesio
-# DESCRIPTION : Analyse mensuelle et rapprochement automatique BL / Factures
+# DESCRIPTION : Analyse mensuelle, historique M-1 et suivi des chantiers
 # AUTEUR      : Louise BRUN - Koesio Groupe
 # ==============================================================================
 
@@ -177,7 +177,7 @@ def detect_filiale(df_art):
 filiale_detectee = detect_filiale(df_artis)
 
 # ------------------------------------------------------------------------------
-# 7. CALCULS ET VENTILATION PAR MOIS (CORRECTION STRICTE DU VOLUME ÉPURÉ)
+# 7. CALCULS ET VENTILATION PAR MOIS (CORRECTION STRICTE DU VOLUME ÉPURÉ & NO % SUR GED PURE)
 # ------------------------------------------------------------------------------
 mois_fr = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
@@ -227,31 +227,33 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
         if tot_isi_brut > 0 and 'Statut de rapprochement' in sub_isi.columns:
             notes = sub_isi['Tampons / Notes / Conversations'].fillna('') if 'Tampons / Notes / Conversations' in sub_isi.columns else pd.Series('', index=sub_isi.index)
             
-            # Décompte GED Pure (Tampon FAF ARTIS + Statut vide + écart volume)
+            # 1. Identification GED Pure (Statut de rapprochement vide ou Tampon FAF ARTIS)
             no_rappro_mask = sub_isi['Statut de rapprochement'].isna()
             faf_artis_mask = notes.str.contains('FAF ARTIS|FAF_ARTIS', case=False, regex=True)
-            gap_volume = max(0, tot_art - tot_isi_brut) if tot_art > tot_isi_brut else 0
             
-            ged_pure_c = no_rappro_mask.sum() + faf_artis_mask.sum() + gap_volume
+            ged_pure_c = no_rappro_mask.sum() + faf_artis_mask.sum()
             
-            # VOLUME ÉPURÉ EXACT (Vol Brut - Flux GED Pure)
+            # 2. Volumétrie Épurée réelle (Vol Brut - GED Pure)
             vol_epure = max(0, tot_isi_brut - ged_pure_c)
             
-            # Rapprochement Auto
-            auto_c = len(sub_isi[sub_isi['Statut de rapprochement'] == 'Rapproché automatiquement'])
+            # 3. Répartition des catégories uniquement sur les pièces soumises au rapprochement
+            sub_isi_epure = sub_isi[~no_rappro_mask & ~faf_artis_mask].copy()
+            notes_epure = sub_isi_epure['Tampons / Notes / Conversations'].fillna('') if 'Tampons / Notes / Conversations' in sub_isi_epure.columns else pd.Series('', index=sub_isi_epure.index)
+            
+            # Auto
+            auto_c = len(sub_isi_epure[sub_isi_epure['Statut de rapprochement'] == 'Rapproché automatiquement'])
             
             # Faux Manuel (Frais / Port / DEEE)
-            faux_c = len(sub_isi[notes.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
+            faux_c = len(sub_isi_epure[notes_epure.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
             
             # Vrai Manuel
-            man_tot = len(sub_isi[sub_isi['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)])
-            vrai_c = max(0, man_tot - (faux_c + faf_artis_mask.sum()))
+            man_tot = len(sub_isi_epure[sub_isi_epure['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)])
+            vrai_c = max(0, man_tot - faux_c)
             
             # En attente
             attente_c = max(0, vol_epure - (auto_c + faux_c + vrai_c))
             
-            # Calcul des pourcentages strictement basés sur Vol_Epure
-            pct_gp = (ged_pure_c / tot_isi_brut * 100) if tot_isi_brut > 0 else 0.0
+            # Calcul des pourcentages strictement basés sur le Volume Épuré
             denom = vol_epure if vol_epure > 0 else 1
             
             pct_a = (auto_c / denom) * 100
@@ -260,12 +262,12 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
             pct_att = (attente_c / denom) * 100
         else:
             auto_c, faux_c, vrai_c, ged_pure_c, attente_c, vol_epure = 0, 0, 0, 0, 0, 0
-            pct_a, pct_f, pct_v, pct_gp, pct_att = 0.0, 0.0, 0.0, 0.0, 0.0
+            pct_a, pct_f, pct_v, pct_att = 0.0, 0.0, 0.0, 0.0
 
         rows_ged.append({
             "Mois Comptable": label_mois,
             "📋 Vol. Brut GED": tot_isi_brut,
-            "📁 Flux GED Pure (Archivage / FAF)": f"{pct_gp:.1f}% ({ged_pure_c})",
+            "📁 Flux GED Pure (Archivage / FAF)": f"{ged_pure_c}",  # PAS DE % SUR GED PURE
             "📊 Vol. Épuré": vol_epure,
             "🤖 Rapprochement Auto": f"{pct_a:.1f}% ({auto_c})",
             "🚚 Faux Manuel (Frais/Port)": f"{pct_f:.1f}% ({faux_c})",
@@ -485,20 +487,21 @@ with tab2:
             
             no_rappro = sub_isi_f['Statut de rapprochement'].isna() if 'Statut de rapprochement' in sub_isi_f.columns else pd.Series(False, index=sub_isi_f.index)
             faf_cnt = len(sub_isi_f[notes.str.contains('FAF ARTIS|FAF_ARTIS', case=False, regex=True)])
-            gap_cnt = max(0, tot_art_f - vol_brut) if tot_art_f > vol_brut else 0
             
-            ged_pure = no_rappro.sum() + faf_cnt + gap_cnt
+            ged_pure = no_rappro.sum() + faf_cnt
             vol_epure = max(0, vol_brut - ged_pure)
             
-            auto_c = len(sub_isi_f[sub_isi_f['Statut de rapprochement'] == 'Rapproché automatiquement']) if 'Statut de rapprochement' in sub_isi_f.columns else 0
-            faux_c = len(sub_isi_f[notes.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
+            sub_isi_f_epure = sub_isi_f[~no_rappro & ~sub_isi_f['Tampons / Notes / Conversations'].fillna('').str.contains('FAF ARTIS|FAF_ARTIS', case=False, regex=True)].copy()
+            notes_f_epure = sub_isi_f_epure['Tampons / Notes / Conversations'].fillna('') if 'Tampons / Notes / Conversations' in sub_isi_f_epure.columns else pd.Series('', index=sub_isi_f_epure.index)
             
-            man_tot = len(sub_isi_f[sub_isi_f['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)]) if 'Statut de rapprochement' in sub_isi_f.columns else 0
-            vrai_c = max(0, man_tot - (faux_c + faf_cnt))
+            auto_c = len(sub_isi_f_epure[sub_isi_f_epure['Statut de rapprochement'] == 'Rapproché automatiquement']) if 'Statut de rapprochement' in sub_isi_f_epure.columns else 0
+            faux_c = len(sub_isi_f_epure[notes_f_epure.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
+            
+            man_tot = len(sub_isi_f_epure[sub_isi_f_epure['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)]) if 'Statut de rapprochement' in sub_isi_f_epure.columns else 0
+            vrai_c = max(0, man_tot - faux_c)
             
             att_c = max(0, vol_epure - (auto_c + faux_c + vrai_c))
             
-            pct_gp = (ged_pure / vol_brut * 100) if vol_brut > 0 else 0
             denom = vol_epure if vol_epure > 0 else 1
             
             pct_a = (auto_c / denom * 100) if vol_epure > 0 else 0
@@ -528,7 +531,7 @@ with tab2:
                 "Rang": idx,
                 "Filiale Groupe": f,
                 "Vol. Brut GED": vol_brut,
-                "Flux GED Pure": ged_pure,
+                "Flux GED Pure": f"{ged_pure}",  # PAS DE % SUR GED PURE
                 "Vol. Épuré": vol_epure,
                 "🤖 Rapprochement Auto (Évolution M vs M-1)": str_eval_auto,
                 "🚚 Faux Manuel (Frais)": f"{pct_f:.1f}% ({faux_c})",
@@ -537,7 +540,6 @@ with tab2:
                 "🎯 Potentiel Cible": f"{pct_pot:.1f}%"
             })
             
-        pct_tot_gp = (tot_ged_pure / tot_vol_brut * 100) if tot_vol_brut > 0 else 0
         pct_tot_a = (tot_auto / tot_vol_epure * 100) if tot_vol_epure > 0 else 0
         pct_tot_f = (tot_faux / tot_vol_epure * 100) if tot_vol_epure > 0 else 0
         pct_tot_v = (tot_vrai / tot_vol_epure * 100) if tot_vol_epure > 0 else 0
@@ -547,7 +549,7 @@ with tab2:
             "Rang": "—",
             "Filiale Groupe": "TOTAL GROUPE CONSOLIDÉ",
             "Vol. Brut GED": tot_vol_brut,
-            "Flux GED Pure": tot_ged_pure,
+            "Flux GED Pure": f"{tot_ged_pure}",
             "Vol. Épuré": tot_vol_epure,
             "🤖 Rapprochement Auto (Évolution M vs M-1)": f"{pct_tot_a:.1f}% ({tot_auto})",
             "🚚 Faux Manuel (Frais)": f"{pct_tot_f:.1f}% ({tot_faux})",
@@ -584,7 +586,7 @@ with tab2:
                 "Filiale Groupe": f,
                 "Total Pièces Validées Artis": tot_art_f,
                 "🤖 Batch Automatique (admin)": f"{pct_b:.1f}% ({batch_c})",
-                "👤 Saisie / Reprise Manuelle": f"{pct_m:.1f}% ({man_c})"
+                "👤 Saisie / Forçage Manuel ERP": f"{pct_m:.1f}% ({man_c})"
             })
             
         pct_tot_batch = (tot_batch_all / tot_art_all * 100) if tot_art_all > 0 else 0
@@ -595,7 +597,7 @@ with tab2:
             "Filiale Groupe": "TOTAL ERP CONSOLIDÉ",
             "Total Pièces Validées Artis": tot_art_all,
             "🤖 Batch Automatique (admin)": f"{pct_tot_batch:.1f}% ({tot_batch_all})",
-            "👤 Saisie / Reprise Manuelle": f"{pct_tot_man_erp:.1f}% ({tot_man_all})"
+            "👤 Saisie / Forçage Manuel ERP": f"{pct_tot_man_erp:.1f}% ({tot_man_all})"
         })
         
         df_erp_groupe = pd.DataFrame(rows_erp_groupe)
