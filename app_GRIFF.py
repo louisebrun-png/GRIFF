@@ -6,7 +6,6 @@
 
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 
 # ------------------------------------------------------------------------------
 # 1. CONFIGURATION DE LA PAGE STREAMLIT
@@ -32,112 +31,101 @@ st.info(
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION UNIQUE
+# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION AVEC DÉTECTION AUTO DES TYPES
 # ------------------------------------------------------------------------------
 st.sidebar.header("📂 Ingestion des Données")
 st.sidebar.markdown("Téléversez vos exports mensuels pour lancer le calcul automatisé.")
 
-# Import Zeendoc / Isiwork
-files_isiwork = st.sidebar.file_uploader(
+files_isiwork_input = st.sidebar.file_uploader(
     "Exports Isiwork / Zeendoc (.xlsx, .csv)",
     type=["xlsx", "csv"],
     accept_multiple_files=True,
     help="Export Zeendoc contenant la colonne 'Statut de rapprochement'."
 )
 
-# Import Artis
-files_artis = st.sidebar.file_uploader(
+files_artis_input = st.sidebar.file_uploader(
     "Exports Artis ERP (.xlsx, .csv)",
     type=["xlsx", "csv"],
     accept_multiple_files=True,
     help="Export de la recherche des factures fournisseurs Artis."
 )
 
+all_uploaded_files = (files_isiwork_input or []) + (files_artis_input or [])
+
 # ------------------------------------------------------------------------------
-# 4. FONCTIONS DE CHARGEMENT & NETTOYAGE LIGNE EN-TÊTE
+# 4. FONCTIONS INTELLIGENTES DE SÉPARATION & CHARGEMENT
 # ------------------------------------------------------------------------------
 @st.cache_data
-def load_zeendoc_data(uploaded_files):
-    df_list = []
-    filiale_from_isiwork = None
+def load_all_data(uploaded_files):
+    isi_list = []
+    art_list = []
     
     for file in uploaded_files:
         try:
-            df_temp = pd.read_excel(file, header=None) if file.name.endswith('.xlsx') else pd.read_csv(file, header=None)
-            
-            # Détection du nom de la filiale en cellule A1 ou dans les premières lignes
-            if not df_temp.empty and pd.notna(df_temp.iloc[0, 0]):
-                val_a1 = str(df_temp.iloc[0, 0]).strip()
-                if "KOESIO" in val_a1.upper():
-                    filiale_from_isiwork = val_a1
-            
-            header_row = 0
-            for idx, row in df_temp.iterrows():
-                if 'Statut de rapprochement' in row.values or 'Identifiant' in row.values:
-                    header_row = idx
+            if file.name.endswith('.xlsx'):
+                df_temp = pd.read_excel(file, header=None)
+            else:
+                df_temp = pd.read_csv(file, header=None)
+                
+            is_artis = False
+            for idx, row in df_temp.iloc[:5].iterrows():
+                row_str = " ".join(map(str, row.values))
+                if 'Raison sociale' in row_str or 'Organisation interne' in row_str or 'Code fournisseur' in row_str:
+                    is_artis = True
                     break
             
-            if file.name.endswith('.xlsx'):
-                df = pd.read_excel(file, header=header_row)
+            if is_artis:
+                if file.name.endswith('.xlsx'):
+                    df_art = pd.read_excel(file)
+                else:
+                    df_art = pd.read_csv(file)
+                art_list.append(df_art)
             else:
-                df = pd.read_csv(file, header=header_row)
-            
-            df_list.append(df)
+                header_row = 0
+                for idx, row in df_temp.iterrows():
+                    if 'Statut de rapprochement' in row.values or 'Identifiant' in row.values or 'Date facture' in row.values:
+                        header_row = idx
+                        break
+                
+                if file.name.endswith('.xlsx'):
+                    df_isi = pd.read_excel(file, header=header_row)
+                else:
+                    df_isi = pd.read_csv(file, header=header_row)
+                isi_list.append(df_isi)
+                
         except Exception as e:
             st.error(f"Erreur lors de la lecture de {file.name}: {e}")
             
-    if df_list:
-        df_concat = pd.concat(df_list, ignore_index=True)
-        return df_concat, filiale_from_isiwork
-    return pd.DataFrame(), None
+    df_isi_concat = pd.concat(isi_list, ignore_index=True) if isi_list else pd.DataFrame()
+    df_art_concat = pd.concat(art_list, ignore_index=True) if art_list else pd.DataFrame()
+    
+    return df_isi_concat, df_art_concat
 
-@st.cache_data
-def load_artis_data(uploaded_files):
-    df_list = []
-    for file in uploaded_files:
-        try:
-            if file.name.endswith('.xlsx'):
-                df = pd.read_excel(file)
-            else:
-                df = pd.read_csv(file)
-            df_list.append(df)
-        except Exception as e:
-            st.error(f"Erreur lors de la lecture de {file.name}: {e}")
-            
-    if df_list:
-        return pd.concat(df_list, ignore_index=True)
-    return pd.DataFrame()
-
-df_isiwork, filiale_isiwork = load_zeendoc_data(files_isiwork) if files_isiwork else (pd.DataFrame(), None)
-df_artis = load_artis_data(files_artis) if files_artis else pd.DataFrame()
+df_isiwork, df_artis = load_all_data(all_uploaded_files)
 
 # ------------------------------------------------------------------------------
-# 5. DÉTECTION DYNAMIQUE DE LA FILIALE DEPUIS LES FICHIERS
+# 5. DÉTECTION DYNAMIQUE DE LA FILIALE
 # ------------------------------------------------------------------------------
-def detect_filiale(df_art, filiale_isi):
+def detect_filiale(df_art):
     if not df_art.empty and 'Organisation interne' in df_art.columns:
         filiales = df_art['Organisation interne'].dropna().unique().tolist()
         if filiales:
             return ", ".join(map(str, filiales))
-            
-    if filiale_isi:
-        return filiale_isi
-        
     return "En attente de fichier..."
 
-filiale_detectee = detect_filiale(df_artis, filiale_isiwork)
+filiale_detectee = detect_filiale(df_artis)
 
 # ------------------------------------------------------------------------------
-# 6. FONCTIONS DE CALCUL VENTILÉ PAR MOIS COMPTABLE
+# 6. CALCULS ET VENTILATION PAR MOIS (EXCLUSION MOIS EN COURS INCOMPLET)
 # ------------------------------------------------------------------------------
 mois_fr = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
     7: "Juillet", 8: "Août", 9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre"
 }
 
-def compute_monthly_breakdown(df_art, df_isi):
-    rows_ged = []
-    rows_erp = []
+def compute_monthly_breakdown(df_art_in, df_isi_in):
+    df_art = df_art_in.copy()
+    df_isi = df_isi_in.copy()
     
     if not df_art.empty and 'Date' in df_art.columns:
         df_art['Date_dt'] = pd.to_datetime(df_art['Date'], errors='coerce')
@@ -151,18 +139,20 @@ def compute_monthly_breakdown(df_art, df_isi):
     else:
         df_isi['Mois_Period'] = None
 
-    periods_art = df_art['Mois_Period'].dropna().unique().tolist() if 'Mois_Period' in df_art else []
+    # On extrait uniquement les mois réellement présents dans l'export Isiwork
     periods_isi = df_isi['Mois_Period'].dropna().unique().tolist() if 'Mois_Period' in df_isi else []
-    all_periods = sorted(list(set(periods_art + periods_isi)))
+    
+    # Filtrage : On ne garde que les mois validés Isiwork (exclut Octobre en cours)
+    all_periods = sorted([p for p in periods_isi if p is not None])
 
-    if not all_periods:
-        all_periods = [None]
+    rows_ged = []
+    rows_erp = []
 
     for p in all_periods:
-        label_mois = f"{mois_fr.get(p.month, str(p.month))} {p.year}" if p else "Mois non détecté"
+        label_mois = f"{mois_fr.get(p.month, str(p.month))} {p.year}"
         
-        sub_art = df_art[df_art['Mois_Period'] == p] if p and 'Mois_Period' in df_art else df_art
-        sub_isi = df_isi[df_isi['Mois_Period'] == p] if p and 'Mois_Period' in df_isi else df_isi
+        sub_art = df_art[df_art['Mois_Period'] == p] if 'Mois_Period' in df_art else pd.DataFrame()
+        sub_isi = df_isi[df_isi['Mois_Period'] == p] if 'Mois_Period' in df_isi else pd.DataFrame()
         
         # ARTIS (ERP)
         tot_art = len(sub_art)
@@ -216,14 +206,28 @@ def compute_monthly_breakdown(df_art, df_isi):
             "Saisie / Forçage Manuel ERP": f"{pct_man:.1f}% ({art_man})"
         })
 
-    return pd.DataFrame(rows_ged), pd.DataFrame(rows_erp)
+    return pd.DataFrame(rows_ged), pd.DataFrame(rows_erp), all_periods
 
-df_ged_monthly, df_erp_monthly = compute_monthly_breakdown(df_artis, df_isiwork)
+df_ged_monthly, df_erp_monthly, valid_periods = compute_monthly_breakdown(df_artis, df_isiwork)
 
-if len(df_ged_monthly) == 1:
-    periode_globale = df_ged_monthly["Mois Comptable"].iloc[0]
+# Filtrage global des compteurs KPI pour ne compter que les mois retenus
+if valid_periods and not df_artis.empty and 'Date' in df_artis.columns:
+    df_artis_filtered = df_artis[pd.to_datetime(df_artis['Date'], errors='coerce').dt.to_period('M').isin(valid_periods)]
 else:
-    periode_globale = f"{df_ged_monthly['Mois Comptable'].iloc[0]} et {df_ged_monthly['Mois Comptable'].iloc[-1]}"
+    df_artis_filtered = df_artis
+
+if valid_periods and not df_isiwork.empty and 'Date facture' in df_isiwork.columns:
+    df_isiwork_filtered = df_isiwork[pd.to_datetime(df_isiwork['Date facture'], errors='coerce').dt.to_period('M').isin(valid_periods)]
+else:
+    df_isiwork_filtered = df_isiwork
+
+if not df_ged_monthly.empty:
+    if len(df_ged_monthly) == 1:
+        periode_globale = df_ged_monthly["Mois Comptable"].iloc[0]
+    else:
+        periode_globale = f"{df_ged_monthly['Mois Comptable'].iloc[0]} et {df_ged_monthly['Mois Comptable'].iloc[-1]}"
+else:
+    periode_globale = "Mois non détecté"
 
 # ------------------------------------------------------------------------------
 # 7. ONGLETS DE NAVIGATION
@@ -237,13 +241,13 @@ with tab1:
     st.subheader(f"📊 Bilan de Production — {filiale_detectee}")
     
     if not df_isiwork.empty or not df_artis.empty:
-        st.success(f"📅 Périodes analysées : **{periode_globale}**")
+        st.success(f"📅 Périodes analysées (mois clôturés) : **{periode_globale}**")
         
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.metric("Total Factures Artis", f"{len(df_artis):,}".replace(',', ' '))
+            st.metric("Total Factures Artis", f"{len(df_artis_filtered):,}".replace(',', ' '))
         with c2:
-            st.metric("Total Factures Isiwork", f"{len(df_isiwork):,}".replace(',', ' '))
+            st.metric("Total Factures Isiwork", f"{len(df_isiwork_filtered):,}".replace(',', ' '))
         with c3:
             st.metric("Mois Traités", len(df_ged_monthly))
         with c4:
@@ -264,7 +268,7 @@ with tab1:
         try:
             table_ged_md = df_ged_monthly.to_markdown(index=False)
             table_erp_md = df_erp_monthly.to_markdown(index=False)
-        except ImportError:
+        except Exception:
             table_ged_md = df_ged_monthly.to_string(index=False)
             table_erp_md = df_erp_monthly.to_string(index=False)
         
@@ -293,10 +297,10 @@ Légende des états:
 
 
 3. Focus Actions / Analyse des rapprochements "Vrais Manuels"
-Sur la part des traitements bloqués pour de vrais écarts de prix ou de quantités sur les lignes de produits (hors lignes de frais), les anomalies se concentrent principalement sur trois partenaires majeurs :
-• CANON FRANCE
-• SHARP BUSINESS SYSTEMS
+Sur la part des traitements bloqués pour de vrais écarts de prix ou de quantités sur les lignes de produits (hors lignes de frais), les anomalies se concentrent principalement sur les fournisseurs clés :
+• TD SYNNEX
 • ACTUAL SYSTEMES
+• CANON FRANCE
 
 
 4. Suivi des chantiers techniques et conclusion
