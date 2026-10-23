@@ -490,7 +490,7 @@ with tab1:
         st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
 
 # ==============================================================================
-# ONGLET 2 : CONSOLIDATION GROUPE (MATCHING STRICT AVEC ANCRAGE DE MOTS)
+# ONGLET 2 : CONSOLIDATION GROUPE (TABLE DE CORRESPONDANCE DIRECTE)
 # ==============================================================================
 with tab2:
     st.subheader("🌍 Consolidation Inter-Filiales — Groupe Koesio")
@@ -514,39 +514,32 @@ with tab2:
         tot_vrai = 0
         tot_att = 0
         
+        # TABLE DE CORRESPONDANCE DIRECTE EN DUR
+        CORRESPONDANCE_ZEENDOC = {
+            "KOESIO NORD OUEST": ["KOESIO NORD-OUEST", "KOESIO NORD OUEST", "KNO"],
+            "KOESIO NORD-OUEST": ["KOESIO NORD-OUEST", "KOESIO NORD OUEST", "KNO"],
+            "KOESIO OUEST": ["KOESIO OUEST"],
+            "KOESIO ILE DE FRANCE": ["KOESIO IDF", "KOESIO|Rappro Artis IDF", "IDF", "ILE DE FRANCE"],
+            "KOESIO AQUITAINE": ["JEAPI Aquitaine", "AQUITAINE"],
+            "KOESIO OCCITANIE": ["BCMP", "OCCITANIE", "OCC"],
+            "KOESIO CENTRE EST": ["Esus", "CENTRE EST", "CEE"],
+            "2iT solutions": ["RHONE ALPES REPRO INFORMATIQUE", "2IT"],
+            "KOESIO MEDITERRANEE": ["KOESIO MED", "MEDITERRANEE"],
+            "KOESIO PACA": ["KOESIO PACA", "PACA"],
+            "KOESIO EST": ["KOESIO EST"],
+            "EOLE": ["EOLE"]
+        }
+        
         for f in filiales_groupe:
             sub_art_f = df_artis_filtered[df_artis_filtered['Organisation interne'] == f]
             
             if 'Organisation_Zeendoc' in df_isiwork_filtered.columns:
-                f_norm = f.upper().replace("-", " ")
+                termes_zeendoc = CORRESPONDANCE_ZEENDOC.get(f, [f])
                 
-                # RECHERCHE STRICTE PAR FILIALE SANS CONFUSION EST/OUEST
-                if "NORD" in f_norm and "OUEST" in f_norm:
-                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("NORD", case=False, na=False) & df_isiwork_filtered['Organisation_Zeendoc'].str.contains("OUEST", case=False, na=False)
-                elif "OUEST" in f_norm:
-                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("OUEST", case=False, na=False) & ~df_isiwork_filtered['Organisation_Zeendoc'].str.contains("NORD", case=False, na=False)
-                elif "ILE DE FRANCE" in f_norm or "IDF" in f_norm:
-                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("IDF|ILE DE FRANCE", case=False, na=False)
-                elif "AQUITAINE" in f_norm:
-                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("AQUITAINE|JEAPI", case=False, na=False)
-                elif "OCCITANIE" in f_norm:
-                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("BCMP|OCCITANIE|OCC", case=False, na=False)
-                elif "CENTRE EST" in f_norm:
-                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("ESUS|CENTRE EST|CEE", case=False, na=False)
-                elif "2IT" in f_norm:
-                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("RHONE ALPES|2IT", case=False, na=False)
-                elif "MEDITERRANEE" in f_norm or "MED" in f_norm:
-                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("MED", case=False, na=False)
-                elif "PACA" in f_norm:
-                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("PACA", case=False, na=False)
-                elif "EOLE" in f_norm:
-                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("EOLE", case=False, na=False)
-                elif r"\bEST\b" in f_norm:
-                    # Ancrage strict sur EST pour éviter de capturer OUEST
-                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains(r"\bEST\b", case=False, regex=True, na=False) & ~df_isiwork_filtered['Organisation_Zeendoc'].str.contains("OUEST", case=False, na=False)
-                else:
-                    kw = f.replace("KOESIO", "").strip()
-                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains(re.escape(kw), case=False, na=False)
+                # Match direct sur la signature Zeendoc
+                mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].astype(str).str.upper().apply(
+                    lambda x: any(term.upper() in x for term in termes_zeendoc)
+                )
                 
                 sub_isi_f = df_isiwork_filtered[mask_isi].copy()
             else:
