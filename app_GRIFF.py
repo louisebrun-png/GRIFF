@@ -177,7 +177,7 @@ def detect_filiale(df_art):
 filiale_detectee = detect_filiale(df_artis)
 
 # ------------------------------------------------------------------------------
-# 7. CALCULS ET VENTILATION PAR MOIS (MÉTHODOLOGIE STRICTE D'ISOLATION GED PURE)
+# 7. CALCULS ET VENTILATION PAR MOIS (CORRECTION DE L'ÉPURÉ STRICT)
 # ------------------------------------------------------------------------------
 mois_fr = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
@@ -227,30 +227,32 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
         if tot_isi_brut > 0 and 'Statut de rapprochement' in sub_isi.columns:
             notes = sub_isi['Tampons / Notes / Conversations'].fillna('') if 'Tampons / Notes / Conversations' in sub_isi.columns else pd.Series('', index=sub_isi.index)
             
-            # Identification et ISOLATION de la GED Pure
+            # Isolement de la GED Pure
             no_rappro_mask = sub_isi['Statut de rapprochement'].isna()
             faf_artis_mask = notes.str.contains('FAF ARTIS|FAF_ARTIS', case=False, regex=True)
             gap_volume = max(0, tot_art - tot_isi_brut) if tot_art > tot_isi_brut else 0
             
             ged_pure_c = no_rappro_mask.sum() + faf_artis_mask.sum() + gap_volume
             
-            # FILTRAGE : On conserve UNIQUEMENT les lignes réellement soumises au rapprochement GED
+            # VOLUME ÉPURÉ REEL (Soumis au rapprochement)
+            vol_epure = max(0, tot_isi_brut - (no_rappro_mask.sum() + faf_artis_mask.sum()))
+            if gap_volume > 0 and vol_epure > gap_volume:
+                vol_epure = vol_epure - gap_volume
+                
+            # Filtrage des lignes valides réelles pour la ventilation
             sub_isi_epure = sub_isi[~no_rappro_mask & ~faf_artis_mask].copy()
+            if gap_volume > 0 and len(sub_isi_epure) > vol_epure:
+                sub_isi_epure = sub_isi_epure.iloc[:vol_epure]
+                
             notes_epure = sub_isi_epure['Tampons / Notes / Conversations'].fillna('') if 'Tampons / Notes / Conversations' in sub_isi_epure.columns else pd.Series('', index=sub_isi_epure.index)
             
-            # Volume Épuré exact soumis au rapprochement
-            vol_epure = len(sub_isi_epure)
-            
-            # Ventilation stricte sur sub_isi_epure
             auto_c = len(sub_isi_epure[sub_isi_epure['Statut de rapprochement'] == 'Rapproché automatiquement'])
             faux_c = len(sub_isi_epure[notes_epure.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
-            
             man_tot = len(sub_isi_epure[sub_isi_epure['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)])
             vrai_c = max(0, man_tot - faux_c)
             
             attente_c = max(0, vol_epure - (auto_c + faux_c + vrai_c))
             
-            # Pourcentages calculés EXCLUSIVEMENT sur Vol_Epure
             denom = vol_epure if vol_epure > 0 else 1
             
             pct_a = (auto_c / denom) * 100
@@ -489,9 +491,11 @@ with tab2:
             ged_pure = no_rappro.sum() + faf_cnt + gap_cnt
             
             sub_isi_f_epure = sub_isi_f[~no_rappro & ~notes.str.contains('FAF ARTIS|FAF_ARTIS', case=False, regex=True)].copy()
-            notes_f_epure = sub_isi_f_epure['Tampons / Notes / Conversations'].fillna('') if 'Tampons / Notes / Conversations' in sub_isi_f_epure.columns else pd.Series('', index=sub_isi_f_epure.index)
-            
+            if gap_cnt > 0 and len(sub_isi_f_epure) > max(0, vol_brut - ged_pure):
+                sub_isi_f_epure = sub_isi_f_epure.iloc[:max(0, vol_brut - ged_pure)]
+                
             vol_epure = len(sub_isi_f_epure)
+            notes_f_epure = sub_isi_f_epure['Tampons / Notes / Conversations'].fillna('') if 'Tampons / Notes / Conversations' in sub_isi_f_epure.columns else pd.Series('', index=sub_isi_f_epure.index)
             
             auto_c = len(sub_isi_f_epure[sub_isi_f_epure['Statut de rapprochement'] == 'Rapproché automatiquement']) if 'Statut de rapprochement' in sub_isi_f_epure.columns else 0
             faux_c = len(sub_isi_f_epure[notes_f_epure.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
