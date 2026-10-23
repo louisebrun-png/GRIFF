@@ -139,7 +139,6 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
     else:
         df_isi['Mois_Period'] = None
 
-    # Extraction des mois comptables réellement clôturés dans Isiwork
     periods_isi = df_isi['Mois_Period'].dropna().unique().tolist() if 'Mois_Period' in df_isi else []
     all_periods = sorted([p for p in periods_isi if p is not None])
 
@@ -172,14 +171,14 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
             # 1. Faux Manuel (Frais / Port / DEEE)
             faux_c = len(sub_isi[notes.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
             
-            # 2. Tampon FAF ARTIS (Saisie directe ERP marquée dans Isiwork)
+            # 2. Tampon FAF ARTIS
             faf_artis_c = len(sub_isi[notes.str.contains('FAF ARTIS|FAF_ARTIS', case=False, regex=True)])
             
-            # 3. Vrai Manuel (Total manuels - Faux manuels - FAF Artis)
+            # 3. Vrai Manuel
             man_tot = len(sub_isi[sub_isi['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)])
             vrai_c = max(0, man_tot - (faux_c + faf_artis_c))
             
-            # 4. Flux GED pure / Saisie directe ERP globale
+            # 4. Flux GED pure
             gap_volume = max(0, tot_art - tot_isi) if tot_art > tot_isi else 0
             ged_pure_c = gap_volume + faf_artis_c
             
@@ -215,7 +214,7 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
 
 df_ged_monthly, df_erp_monthly, valid_periods = compute_monthly_breakdown(df_artis, df_isiwork)
 
-# Filtrage des DataFrames globaux sur les mois validés
+# Filtrage DataFrames
 if valid_periods and not df_artis.empty and 'Date' in df_artis.columns:
     df_artis_filtered = df_artis[pd.to_datetime(df_artis['Date'], errors='coerce').dt.to_period('M').isin(valid_periods)]
 else:
@@ -235,7 +234,7 @@ else:
     periode_globale = "Mois non détecté"
 
 # ------------------------------------------------------------------------------
-# 7. EXTRACTION DYNAMIQUE DES TOPS FOURNISSEURS (FORMAT CONCIS & ÉPURÉ)
+# 7. EXTRACTION DYNAMIQUE TOPS FOURNISSEURS
 # ------------------------------------------------------------------------------
 txt_top_vrai = ""
 txt_top_faux = ""
@@ -250,7 +249,6 @@ if not df_isiwork_filtered.empty and 'Statut de rapprochement' in df_isiwork_fil
     df_vrai_fourn = df_man[~mask_faux & ~mask_faf]
     df_faux_fourn = df_man[mask_faux]
     
-    # Format concis : juste le nom et le nombre de factures
     if not df_vrai_fourn.empty and 'Fournisseur' in df_vrai_fourn.columns:
         s_vrai = df_vrai_fourn['Fournisseur'].value_counts().head(5)
         txt_top_vrai = "\n".join([f"• {fourn} : {cnt} facture(s)" for fourn, cnt in s_vrai.items()])
@@ -343,7 +341,7 @@ b) Top des fournisseurs concernés par des "Faux Manuels" (Ajustements Frais de 
 
 4. Suivi des chantiers techniques et conclusion
 • Stabilité opérationnelle de l'ERP: L'injection finale en comptabilité confirme la performance du batch automatique sans intervention utilisateur.
-• Levier "Frais Annexes": L'application locale de l'article d'écart dédié aux frais de port (ZINF-FRAIS_DE_PORT) permettra de convertir automatiquement les Faux Manuels en succès machine.
+• Levier "Frais Annexes": Les Faux Manuels s'expliquent par l'absence des lignes de frais de port ou DEEE sur la commande ou le BL initial. L'intégration de ces frais dès la création de la commande ou lors du rapprochement du BL permettra d'éliminer ces blocages et de sécuriser le rapprochement automatique.
 
 Nous restons à votre entière disposition pour échanger sur ce bilan.
 
@@ -363,3 +361,4 @@ Potentiale
 with tab2:
     st.subheader("🌍 Consolidation Inter-Filiales Koesio")
     st.info("Cet onglet permettra de consolider l'ensemble des filiales lorsque plusieurs fichiers seront chargés simultanément.")
+    
