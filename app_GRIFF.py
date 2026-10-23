@@ -1,6 +1,6 @@
 # ==============================================================================
 # APPLICATION : GRIFF — Tour de Contrôle Koesio
-# DESCRIPTION : Analyse mensuelle, historique M-1 et suivi des chantiers
+# DESCRIPTION : Analyse mensuelle et rapprochement automatique BL / Factures
 # AUTEUR      : Louise BRUN - Koesio Groupe
 # ==============================================================================
 
@@ -8,7 +8,6 @@ import streamlit as st
 import pandas as pd
 import re
 
-# Import sécurisé de pypdf sans faire planter l'application
 try:
     import pypdf
     HAS_PYPDF = True
@@ -39,7 +38,7 @@ st.info(
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION & HISTORIQUE MAIL PDF
+# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION AVEC DÉTECTION AUTO
 # ------------------------------------------------------------------------------
 st.sidebar.header("📂 Ingestion des Données M (Mois en cours)")
 st.sidebar.markdown("Téléversez vos exports mensuels pour lancer le calcul automatisé.")
@@ -59,18 +58,18 @@ files_artis_input = st.sidebar.file_uploader(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.header("📜 Historique M-1 (Mail PDF Passé)")
+st.sidebar.header("📜 Historique M-1 (PDF Mail Passé)")
 file_history_input = st.sidebar.file_uploader(
-    "Mail PDF du Rapport Précédent M-1 (.pdf)",
+    "Rapport / Mail PDF M-1 (.pdf)",
     type=["pdf"],
     accept_multiple_files=False,
-    help="Téléversez le mail PDF du mois dernier pour extraire l'historique et l'évolution par filiale."
+    help="Téléversez le rapport PDF du mois précédent pour extraire l'historique M-1."
 )
 
 all_uploaded_files = (files_isiwork_input or []) + (files_artis_input or [])
 
 # ------------------------------------------------------------------------------
-# 4. PARSER AUTOMATIQUE DE L'HISTORIQUE ET DES CHANTIERS DEPUIS LE MAIL PDF
+# 4. PARSER HISTORIQUE DEPUIS LE MAIL PDF
 # ------------------------------------------------------------------------------
 @st.cache_data
 def parse_pdf_history_full(pdf_file):
@@ -85,7 +84,6 @@ def parse_pdf_history_full(pdf_file):
         hist_data = {}
         chantiers = []
         
-        # 1. Extraction des taux par filiale depuis les tableaux du PDF
         pattern_ged = re.findall(r'KOESIO\s*([A-Za-zÀ-ÿ\s\-\diT]+?)\s*(\d[\d\s]*)\s+(\d+)\s+(\d+)\s+([\d,]+)\s*%\s*\(([\d\s]+)\)\s+([\d,]+)\s*%\s*\(([\d\s]+)\)\s+([\d,]+)\s*%\s*\(([\d\s]+)\)', full_text)
         
         for match in pattern_ged:
@@ -97,7 +95,6 @@ def parse_pdf_history_full(pdf_file):
                 "vrai_pct_m1": vrai_pct
             }
             
-        # 2. Extraction des chantiers techniques historiques
         lines = full_text.split('\n')
         in_chantiers = False
         for line in lines:
@@ -180,7 +177,7 @@ def detect_filiale(df_art):
 filiale_detectee = detect_filiale(df_artis)
 
 # ------------------------------------------------------------------------------
-# 7. CALCULS ET VENTILATION PAR MOIS
+# 7. CALCULS ET VENTILATION PAR MOIS (CORRECTION STRICTE DU VOLUME ÉPURÉ)
 # ------------------------------------------------------------------------------
 mois_fr = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
@@ -230,25 +227,33 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
         if tot_isi_brut > 0 and 'Statut de rapprochement' in sub_isi.columns:
             notes = sub_isi['Tampons / Notes / Conversations'].fillna('') if 'Tampons / Notes / Conversations' in sub_isi.columns else pd.Series('', index=sub_isi.index)
             
+            # Décompte GED Pure (Tampon FAF ARTIS + Statut vide + écart volume)
             no_rappro_mask = sub_isi['Statut de rapprochement'].isna()
             faf_artis_mask = notes.str.contains('FAF ARTIS|FAF_ARTIS', case=False, regex=True)
-            
             gap_volume = max(0, tot_art - tot_isi_brut) if tot_art > tot_isi_brut else 0
+            
             ged_pure_c = no_rappro_mask.sum() + faf_artis_mask.sum() + gap_volume
             
-            vol_epure = max(0, tot_isi_brut - (no_rappro_mask.sum() + faf_artis_mask.sum()))
+            # VOLUME ÉPURÉ EXACT (Vol Brut - Flux GED Pure)
+            vol_epure = max(0, tot_isi_brut - ged_pure_c)
             
+            # Rapprochement Auto
             auto_c = len(sub_isi[sub_isi['Statut de rapprochement'] == 'Rapproché automatiquement'])
+            
+            # Faux Manuel (Frais / Port / DEEE)
             faux_c = len(sub_isi[notes.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
             
+            # Vrai Manuel
             man_tot = len(sub_isi[sub_isi['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)])
             vrai_c = max(0, man_tot - (faux_c + faf_artis_mask.sum()))
             
+            # En attente
             attente_c = max(0, vol_epure - (auto_c + faux_c + vrai_c))
             
-            denom = vol_epure if vol_epure > 0 else tot_isi_brut
-            
+            # Calcul des pourcentages strictement basés sur Vol_Epure
             pct_gp = (ged_pure_c / tot_isi_brut * 100) if tot_isi_brut > 0 else 0.0
+            denom = vol_epure if vol_epure > 0 else 1
+            
             pct_a = (auto_c / denom) * 100
             pct_f = (faux_c / denom) * 100
             pct_v = (vrai_c / denom) * 100
@@ -445,7 +450,7 @@ with tab1:
         st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
 
 # ==============================================================================
-# ONGLET 2 : CONSOLIDATION GROUPE ET COMPARATIF HISTORIQUE M-1
+# ONGLET 2 : CONSOLIDATION GROUPE
 # ==============================================================================
 with tab2:
     st.subheader("🌍 Consolidation Inter-Filiales — Groupe Koesio")
@@ -483,7 +488,7 @@ with tab2:
             gap_cnt = max(0, tot_art_f - vol_brut) if tot_art_f > vol_brut else 0
             
             ged_pure = no_rappro.sum() + faf_cnt + gap_cnt
-            vol_epure = max(0, vol_brut - (no_rappro.sum() + faf_cnt))
+            vol_epure = max(0, vol_brut - ged_pure)
             
             auto_c = len(sub_isi_f[sub_isi_f['Statut de rapprochement'] == 'Rapproché automatiquement']) if 'Statut de rapprochement' in sub_isi_f.columns else 0
             faux_c = len(sub_isi_f[notes.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
@@ -494,18 +499,16 @@ with tab2:
             att_c = max(0, vol_epure - (auto_c + faux_c + vrai_c))
             
             pct_gp = (ged_pure / vol_brut * 100) if vol_brut > 0 else 0
-            denom = vol_epure if vol_epure > 0 else vol_brut
+            denom = vol_epure if vol_epure > 0 else 1
             
-            pct_a = (auto_c / denom * 100) if denom > 0 else 0
-            pct_f = (faux_c / denom * 100) if denom > 0 else 0
-            pct_v = (vrai_c / denom * 100) if denom > 0 else 0
-            pct_att = (att_c / denom * 100) if denom > 0 else 0
+            pct_a = (auto_c / denom * 100) if vol_epure > 0 else 0
+            pct_f = (faux_c / denom * 100) if vol_epure > 0 else 0
+            pct_v = (vrai_c / denom * 100) if vol_epure > 0 else 0
+            pct_att = (att_c / denom * 100) if vol_epure > 0 else 0
             pct_pot = pct_a + pct_f
             
-            # CALCUL ÉVOLUTION M VS M-1
             str_eval_auto = f"{pct_a:.1f}% ({auto_c})"
             if dict_hist_m1:
-                # recherche correspondante filiale
                 for key_h, val_h in dict_hist_m1.items():
                     if f.upper() in key_h.upper() or key_h.upper() in f.upper():
                         delta_a = pct_a - val_h.get("auto_pct_m1", pct_a)
