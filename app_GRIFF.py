@@ -139,9 +139,9 @@ def parse_pdf_history_full(pdf_file):
 dict_hist_m1, list_chantiers_m1 = parse_pdf_history_full(file_history_input) if file_history_input else ({}, [])
 
 # ------------------------------------------------------------------------------
-# 6. CHARGEMENT ET DÉTECTION PAR CONTENU DE FICHIER (ZEENDOC HEADERS)
+# 6. CHARGEMENT ET DÉTECTION ROBUSTE DES FICHIERS PAR SIGNATURE ZEENDOC
 # ------------------------------------------------------------------------------
-@st.cache_data
+@st.cache_data(show_spinner="Analyse rapide des fichiers Excel...")
 def load_all_data(uploaded_files):
     isi_list = []
     art_list = []
@@ -149,22 +149,17 @@ def load_all_data(uploaded_files):
     for file in uploaded_files:
         try:
             if file.name.endswith('.xlsx'):
-                df_temp = pd.read_excel(file, header=None)
+                df_temp = pd.read_excel(file, header=None, nrows=10)
             else:
-                df_temp = pd.read_csv(file, header=None)
+                df_temp = pd.read_csv(file, header=None, nrows=10)
                 
             is_isiwork = False
             header_row = 0
             
-            # 1. Extraction du nom d'organisation Zeendoc dans les premières lignes
             row_0_str = " ".join([str(v) for v in df_temp.iloc[0].values if pd.notna(v)]).strip() if len(df_temp) > 0 else ""
-            row_1_str = " ".join([str(v) for v in df_temp.iloc[1].values if pd.notna(v)]).strip() if len(df_temp) > 1 else ""
-            
-            # Identification dynamique de l'entité
             entite_detectee = row_0_str if row_0_str else file.name
             
-            # Detection Isiwork via structure d'en-tête
-            for idx, row in df_temp.iloc[:10].iterrows():
+            for idx, row in df_temp.iterrows():
                 row_str = " ".join([str(v) for v in row.values if pd.notna(v)])
                 if 'Statut de rapprochement' in row_str or 'Identifiant' in row_str:
                     is_isiwork = True
@@ -177,7 +172,6 @@ def load_all_data(uploaded_files):
                 else:
                     df_isi = pd.read_csv(file, header=header_row)
                 
-                # Tag de l'organisation d'origine
                 df_isi['Organisation_Zeendoc'] = entite_detectee
                 isi_list.append(df_isi)
             else:
@@ -217,6 +211,7 @@ mois_fr = {
     7: "Juillet", 8: "Août", 9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre"
 }
 
+@st.cache_data
 def compute_monthly_breakdown(df_art_in, df_isi_in):
     df_art = df_art_in.copy()
     df_isi = df_isi_in.copy()
@@ -334,7 +329,7 @@ else:
     periode_globale = "Mois non détecté"
 
 # ------------------------------------------------------------------------------
-# 9. EXTRACTION DYNAMIQUE TOPS FOURNISSEURS SUR PÉRIMÈTRE ÉPURÉ STRICT
+# 9. EXTRACTION DYNAMIQUE TOPS FOURNISSEURS
 # ------------------------------------------------------------------------------
 txt_top_vrai_html = ""
 txt_top_faux_html = ""
@@ -491,7 +486,7 @@ with tab1:
         st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
 
 # ==============================================================================
-# ONGLET 2 : CONSOLIDATION GROUPE (MAPPING INTELLIGENT PAR CONTENU ZEENDOC)
+# ONGLET 2 : CONSOLIDATION GROUPE
 # ==============================================================================
 with tab2:
     st.subheader("🌍 Consolidation Inter-Filiales — Groupe Koesio")
@@ -515,37 +510,39 @@ with tab2:
         tot_vrai = 0
         tot_att = 0
         
-        # MAPPING DES ENTITÉS ZEENDOC VERS FILIALES ARTIS
+        # MAPPINGS ZEENDOC STRICTS AVEC BCMP & JEAPI AQUITAINE
         mapping_zeendoc = {
-            "KOESIO EST": ["EST"],
-            "KOESIO OUEST": ["OUEST"],
-            "KOESIO MED": ["MED", "MEDITERRANEE"],
-            "RHONE ALPES REPRO INFORMATIQUE": ["2IT", "2IT SOLUTIONS"],
-            "ESUS": ["CENTRE EST", "CEE"],
+            "KOESIO ILE DE FRANCE": ["KOESIO IDF", "IDF", "ILE DE FRANCE"],
+            "KOESIO NORD OUEST": ["NORD OUEST", "NORD-OUEST", "KNO"],
+            "KOESIO NORD-OUEST": ["NORD OUEST", "NORD-OUEST", "KNO"],
+            "KOESIO OUEST": ["KOESIO OUEST"],
+            "KOESIO AQUITAINE": ["JEAPI AQUITAINE", "AQUITAINE"],
+            "KOESIO AQUITAINE (EX GTO)": ["JEAPI AQUITAINE", "AQUITAINE"],
+            "KOESIO EST": ["KOESIO EST", "EST"],
+            "KOESIO MEDITERRANEE": ["KOESIO MED", "MEDITERRANEE"],
+            "2IT SOLUTIONS": ["RHONE ALPES REPRO INFORMATIQUE", "2IT"],
+            "KOESIO CENTRE EST": ["ESUS", "CENTRE EST", "CEE"],
             "KOESIO PACA": ["PACA"],
-            "KOESIO NORD OUEST": ["KNO", "NORD OUEST"],
-            "KOESIO ILE DE FRANCE": ["IDF", "ILE DE FRANCE"],
-            "KOESIO OCCITANIE": ["OCC", "OCCITANIE"],
+            "KOESIO OCCITANIE": ["BCMP", "OCCITANIE", "OCC"],
             "EOLE": ["EOLE"]
         }
         
         for idx, f in enumerate(filiales_groupe, start=1):
             sub_art_f = df_artis_filtered[df_artis_filtered['Organisation interne'] == f]
             
-            # FILTRAGE DU BLOC ISIWORK CORRESPONDANT À LA FILIALE
             if 'Organisation_Zeendoc' in df_isiwork_filtered.columns:
-                # Recherche directe ou par alias d'entité
                 mask_isi = pd.Series(False, index=df_isiwork_filtered.index)
                 
-                for z_org, alias_list in mapping_zeendoc.items():
-                    if any(alias in f.upper() for alias in alias_list) or f.upper() in z_org.upper():
-                        mask_isi |= df_isiwork_filtered['Organisation_Zeendoc'].str.contains(re.escape(z_org), case=False, na=False)
+                # Discrimination stricte Nord-Ouest / Nord Ouest vs Ouest
+                if "NORD" in f.upper() and "OUEST" in f.upper():
+                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("NORD", case=False, na=False) & df_isiwork_filtered['Organisation_Zeendoc'].str.contains("OUEST", case=False, na=False)
+                elif "OUEST" in f.upper():
+                    mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("OUEST", case=False, na=False) & ~df_isiwork_filtered['Organisation_Zeendoc'].str.contains("NORD", case=False, na=False)
+                else:
+                    target_aliases = mapping_zeendoc.get(f.upper(), [f.upper()])
+                    for alias in target_aliases:
+                        mask_isi |= df_isiwork_filtered['Organisation_Zeendoc'].str.contains(re.escape(alias), case=False, na=False)
                 
-                # Fallback : recherche par mots clés du nom de filiale
-                kw = f.replace("KOESIO", "").strip()
-                if kw and not mask_isi.any():
-                    mask_isi |= df_isiwork_filtered['Organisation_Zeendoc'].str.contains(re.escape(kw), case=False, na=False)
-                    
                 sub_isi_f = df_isiwork_filtered[mask_isi].copy()
             else:
                 sub_isi_f = pd.DataFrame()
@@ -631,7 +628,7 @@ with tab2:
             "🤖 Rapprochement Auto (Évolution M vs M-1)": f"{pct_tot_a:.1f}% ({tot_auto})",
             "🚚 Faux Manuel (Frais)": f"{pct_tot_f:.1f}% ({tot_faux})",
             "🛠️ Vrai Manuel (Litiges)": f"{pct_tot_v:.1f}% ({tot_vrai})",
-            "⏳ En attente": f"{pct_tot_att:.1f}% ({att_c})",
+            "⏳ En attente": f"{pct_tot_att:.1f}% ({tot_att})",
             "🎯 Potentiel Cible": f"{(pct_tot_a + pct_tot_f):.1f}%"
         })
         
