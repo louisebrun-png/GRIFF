@@ -7,6 +7,7 @@
 import streamlit as st
 import pandas as pd
 import re
+import os
 
 try:
     import pypdf
@@ -25,7 +26,65 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------------------------------
-# 2. EN-TÊTE & ACRONYME GRIFF
+# 2. GESTION DE LA REMISE À ZÉRO (RAZ)
+# ------------------------------------------------------------------------------
+if "uploader_key" not in st.session_state:
+    st.session_state["uploader_key"] = 0
+
+def reset_application():
+    st.cache_data.clear()
+    st.session_state["uploader_key"] += 1
+    st.rerun()
+
+# ------------------------------------------------------------------------------
+# 3. BARRE LATÉRALE (SIDEBAR) : LOGO, TITRE CLAIR & RAZ
+# ------------------------------------------------------------------------------
+# Logo Potentiale tout en haut
+logo_path = "LOGO-SD-Long-Image+Nom.png"
+if os.path.exists(logo_path):
+    st.sidebar.image(logo_path, use_container_width=True)
+
+st.sidebar.header("📂 Chargement des exports mensuels")
+st.sidebar.markdown("Téléversez vos fichiers d'exports du mois pour générer l'analyse.")
+
+# Bouton de remise à zéro
+if st.sidebar.button("🔄 Remise à zéro (RAZ)", use_container_width=True, type="secondary"):
+    reset_application()
+
+st.sidebar.markdown("---")
+
+u_key = st.session_state["uploader_key"]
+
+files_isiwork_input = st.sidebar.file_uploader(
+    "Exports Isiwork / Zeendoc (.xlsx, .csv)",
+    type=["xlsx", "csv"],
+    accept_multiple_files=True,
+    key=f"isi_{u_key}",
+    help="Exports Zeendoc de vos différentes filiales (multi-fichiers acceptés)."
+)
+
+files_artis_input = st.sidebar.file_uploader(
+    "Exports Artis ERP (.xlsx, .csv)",
+    type=["xlsx", "csv"],
+    accept_multiple_files=True,
+    key=f"art_{u_key}",
+    help="Exports Artis ERP de vos différentes filiales."
+)
+
+st.sidebar.markdown("---")
+st.sidebar.header("📜 Historique M-1 (PDF Mail Passé)")
+file_history_input = st.sidebar.file_uploader(
+    "Rapport / Mail PDF M-1 (.pdf)",
+    type=["pdf"],
+    accept_multiple_files=False,
+    key=f"hist_{u_key}",
+    help="Téléversez le rapport PDF du mois précédent pour extraire l'historique M-1."
+)
+
+all_uploaded_files = (files_isiwork_input or []) + (files_artis_input or [])
+
+# ------------------------------------------------------------------------------
+# 4. EN-TÊTE & ACRONYME GRIFF
 # ------------------------------------------------------------------------------
 st.title("🦅 GRIFF — Tour de Contrôle Koesio")
 
@@ -38,38 +97,7 @@ st.info(
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION MULTI-FICHIERS
-# ------------------------------------------------------------------------------
-st.sidebar.header("📂 Ingestion des Données M (Mois en cours)")
-st.sidebar.markdown("Téléversez vos exports mensuels pour lancer le calcul automatisé.")
-
-files_isiwork_input = st.sidebar.file_uploader(
-    "Exports Isiwork / Zeendoc (.xlsx, .csv)",
-    type=["xlsx", "csv"],
-    accept_multiple_files=True,
-    help="Exports Zeendoc de vos différentes filiales (multi-fichiers acceptés)."
-)
-
-files_artis_input = st.sidebar.file_uploader(
-    "Exports Artis ERP (.xlsx, .csv)",
-    type=["xlsx", "csv"],
-    accept_multiple_files=True,
-    help="Exports Artis ERP de vos différentes filiales."
-)
-
-st.sidebar.markdown("---")
-st.sidebar.header("📜 Historique M-1 (PDF Mail Passé)")
-file_history_input = st.sidebar.file_uploader(
-    "Rapport / Mail PDF M-1 (.pdf)",
-    type=["pdf"],
-    accept_multiple_files=False,
-    help="Téléversez le rapport PDF du mois précédent pour extraire l'historique M-1."
-)
-
-all_uploaded_files = (files_isiwork_input or []) + (files_artis_input or [])
-
-# ------------------------------------------------------------------------------
-# 4. PARSER HISTORIQUE DEPUIS LE MAIL PDF
+# 5. PARSER HISTORIQUE DEPUIS LE MAIL PDF
 # ------------------------------------------------------------------------------
 @st.cache_data
 def parse_pdf_history_full(pdf_file):
@@ -113,7 +141,7 @@ def parse_pdf_history_full(pdf_file):
 dict_hist_m1, list_chantiers_m1 = parse_pdf_history_full(file_history_input) if file_history_input else ({}, [])
 
 # ------------------------------------------------------------------------------
-# 5. CHARGEMENT ET DÉTECTION ROBUSTE DES FICHIERS
+# 6. CHARGEMENT ET DÉTECTION ROBUSTE DES FICHIERS
 # ------------------------------------------------------------------------------
 @st.cache_data
 def load_all_data(uploaded_files):
@@ -161,7 +189,7 @@ def load_all_data(uploaded_files):
 df_isiwork, df_artis = load_all_data(all_uploaded_files)
 
 # ------------------------------------------------------------------------------
-# 6. DÉTECTION DYNAMIQUE DE LA FILIALE EN VISION INDIVIDUELLE
+# 7. DÉTECTION DYNAMIQUE DE LA FILIALE EN VISION INDIVIDUELLE
 # ------------------------------------------------------------------------------
 def detect_filiale(df_art):
     if not df_art.empty and 'Organisation interne' in df_art.columns:
@@ -173,7 +201,7 @@ def detect_filiale(df_art):
 filiale_detectee = detect_filiale(df_artis)
 
 # ------------------------------------------------------------------------------
-# 7. CALCULS ET VENTILATION PAR MOIS (RÈGLE STRICTE ÉPURÉE)
+# 8. CALCULS ET VENTILATION PAR MOIS
 # ------------------------------------------------------------------------------
 mois_fr = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
@@ -299,7 +327,7 @@ else:
     periode_globale = "Mois non détecté"
 
 # ------------------------------------------------------------------------------
-# 8. EXTRACTION DYNAMIQUE TOPS FOURNISSEURS SUR PÉRIMÈTRE ÉPURÉ STRICT
+# 9. EXTRACTION DYNAMIQUE TOPS FOURNISSEURS SUR PÉRIMÈTRE ÉPURÉ STRICT
 # ------------------------------------------------------------------------------
 txt_top_vrai_html = ""
 txt_top_faux_html = ""
@@ -340,7 +368,7 @@ if not txt_top_faux_html:
     txt_top_faux_html = "<li>Aucun Faux Manuel détecté</li>"
 
 # ------------------------------------------------------------------------------
-# 9. ONGLETS DE NAVIGATION
+# 10. ONGLETS DE NAVIGATION
 # ------------------------------------------------------------------------------
 tab1, tab2 = st.tabs(["🏢 Vision Filiale (Rapport & Mail)", "🌍 Consolidation Groupe"])
 
