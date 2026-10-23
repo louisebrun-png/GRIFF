@@ -32,7 +32,7 @@ st.info(
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION & HISTORIQUE M-1
+# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION AVEC DÉTECTION AUTO
 # ------------------------------------------------------------------------------
 st.sidebar.header("📂 Ingestion des Données M (Mois en cours)")
 st.sidebar.markdown("Téléversez vos exports mensuels pour lancer le calcul automatisé.")
@@ -63,7 +63,7 @@ file_history_input = st.sidebar.file_uploader(
 all_uploaded_files = (files_isiwork_input or []) + (files_artis_input or [])
 
 # ------------------------------------------------------------------------------
-# 4. FONCTIONS INTELLIGENTES DE CHARGEMENT & HISTORIZATION
+# 4. FONCTIONS INTELLIGENTES DE SÉPARATION & CHARGEMENT
 # ------------------------------------------------------------------------------
 @st.cache_data
 def load_all_data(uploaded_files):
@@ -101,6 +101,11 @@ def load_all_data(uploaded_files):
                     df_isi = pd.read_excel(file, header=header_row)
                 else:
                     df_isi = pd.read_csv(file, header=header_row)
+                
+                # NETTOYAGE LIGNES ARCHIVAGE PURES (Exclut les pièces sans statut de rapprochement)
+                if 'Statut de rapprochement' in df_isi.columns:
+                    df_isi = df_isi[~df_isi['Statut de rapprochement'].isna()].copy()
+                    
                 isi_list.append(df_isi)
                 
         except Exception as e:
@@ -111,22 +116,7 @@ def load_all_data(uploaded_files):
     
     return df_isi_concat, df_art_concat
 
-@st.cache_data
-def load_history_data(history_file):
-    if not history_file:
-        return pd.DataFrame()
-    try:
-        if history_file.name.endswith('.xlsx'):
-            df_hist = pd.read_excel(history_file)
-        else:
-            df_hist = pd.read_csv(history_file)
-        return df_hist
-    except Exception as e:
-        st.error(f"Erreur de lecture du fichier historique M-1: {e}")
-        return pd.DataFrame()
-
 df_isiwork, df_artis = load_all_data(all_uploaded_files)
-df_history_m1 = load_history_data(file_history_input)
 
 # ------------------------------------------------------------------------------
 # 5. DÉTECTION DYNAMIQUE DE LA FILIALE EN VISION INDIVIDUELLE
@@ -405,7 +395,7 @@ with tab1:
         st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
 
 # ==============================================================================
-# ONGLET 2 : CONSOLIDATION GROUPE & COMPARATIF M-1
+# ONGLET 2 : CONSOLIDATION GROUPE
 # ==============================================================================
 with tab2:
     st.subheader("🌍 Consolidation Inter-Filiales — Groupe Koesio")
@@ -415,10 +405,6 @@ with tab2:
         
         st.success(f"🏢 **{len(filiales_groupe)} filiales actives chargées** : {', '.join(map(str, filiales_groupe))}")
         
-        if not df_history_m1.empty:
-            st.info("📈 **Historique M-1 chargé avec succès** : Les évolutions et deltas sont calculés automatiquement.")
-        
-        # 1. CONSTRUCTION TABLEAU VISION GED GROUPE
         rows_ged_groupe = []
         tot_vol_brut = 0
         tot_ged_pure = 0
@@ -478,7 +464,6 @@ with tab2:
                 "🎯 Potentiel Cible": f"{pct_pot:.1f}%"
             })
             
-        # Ligne TOTAL CONSOLIDÉ
         pct_tot_a = (tot_auto / tot_vol_epure * 100) if tot_vol_epure > 0 else 0
         pct_tot_f = (tot_faux / tot_vol_epure * 100) if tot_vol_epure > 0 else 0
         pct_tot_v = (tot_vrai / tot_vol_epure * 100) if tot_vol_epure > 0 else 0
@@ -499,7 +484,6 @@ with tab2:
         
         df_ged_groupe = pd.DataFrame(rows_ged_groupe)
         
-        # 2. CONSTRUCTION TABLEAU VISION ERP GROUPE
         rows_erp_groupe = []
         tot_art_all = 0
         tot_batch_all = 0
@@ -542,7 +526,6 @@ with tab2:
         
         df_erp_groupe = pd.DataFrame(rows_erp_groupe)
         
-        # 3. AFFICHAGE DES KPI & TABLEAUX GROUPE
         g1, g2, g3, g4 = st.columns(4)
         with g1:
             st.metric("Total Factures Artis Groupe", f"{tot_art_all:,}".replace(',', ' '))
