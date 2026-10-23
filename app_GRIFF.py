@@ -95,51 +95,51 @@ st.info(
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 5. PARSER HISTORIQUE DEPUIS LE MAIL PDF
+# 5. HISTORIQUE M-1 (JUILLET 2026) PAR DÉFAUT ET DEPUIS LE MAIL PDF
 # ------------------------------------------------------------------------------
+HISTORIQUE_DEFAULT_M1 = {
+    "KOESIO CENTRE EST": 48.5,
+    "KOESIO EST": 40.3,
+    "KOESIO NORD OUEST": 34.1,
+    "KOESIO NORD-OUEST": 34.1,
+    "KOESIO ILE DE FRANCE": 29.6,
+    "KOESIO OCCITANIE": 36.9,
+    "EOLE": 34.2,
+    "2IT SOLUTIONS": 8.8,
+    "KOESIO PACA": 39.2,
+    "KOESIO MEDITERRANEE": 25.4,
+    "TOTAL GROUPE CONSOLIDÉ": 36.6
+}
+
 @st.cache_data
 def parse_pdf_history_full(pdf_file):
+    hist_data = HISTORIQUE_DEFAULT_M1.copy()
+    chantiers = [
+        "Alerte Référentiels Prix : SHARP, ACTUAL SYSTEMES, KATUN FRANCE.",
+        "Correctif API TVA : Suivi de la livraison globale sur Artis v2."
+    ]
     if not pdf_file or not HAS_PYPDF:
-        return {}, []
+        return hist_data, chantiers
     try:
         reader = pypdf.PdfReader(pdf_file)
         full_text = ""
         for page in reader.pages:
             full_text += page.extract_text() + "\n"
             
-        hist_data = {}
-        chantiers = []
-        
-        pattern_ged = re.findall(r'KOESIO\s*([A-Za-zÀ-ÿ\s\-\diT]+?)\s*(\d[\d\s]*)\s+(\d+)\s+(\d+)\s+([\d,]+)\s*%\s*\(([\d\s]+)\)\s+([\d,]+)\s*%\s*\(([\d\s]+)\)\s+([\d,]+)\s*%\s*\(([\d\s]+)\)', full_text)
-        
+        pattern_ged = re.findall(r'KOESIO\s*([A-Za-zÀ-ÿ\s\-\diT]+?)\s*(\d[\d\s]*)\s+(\d+)\s+(\d+)\s+([\d,]+)\s*%\s*\(([\d\s]+)\)', full_text)
         for match in pattern_ged:
-            name = match[0].strip()
+            name = match[0].strip().upper()
             auto_pct = float(match[4].replace(',', '.'))
-            vrai_pct = float(match[8].replace(',', '.'))
-            hist_data[name] = {
-                "auto_pct_m1": auto_pct,
-                "vrai_pct_m1": vrai_pct
-            }
+            hist_data[f"KOESIO {name}"] = auto_pct
             
-        lines = full_text.split('\n')
-        in_chantiers = False
-        for line in lines:
-            if "SUIVI DES CHANTIERS" in line.upper() or "FOCUS ACTIONS" in line.upper():
-                in_chantiers = True
-            elif in_chantiers and line.strip().startswith(('•', '1.', '2.', '3.', '-')):
-                chantiers.append(line.strip())
-            elif in_chantiers and len(chantiers) > 0 and line.strip() == "":
-                in_chantiers = False
-                
         return hist_data, chantiers
-    except Exception as e:
-        st.error(f"Erreur lors de la lecture du PDF historique : {e}")
-        return {}, []
+    except Exception:
+        return hist_data, chantiers
 
-dict_hist_m1, list_chantiers_m1 = parse_pdf_history_full(file_history_input) if file_history_input else ({}, [])
+dict_hist_m1, list_chantiers_m1 = parse_pdf_history_full(file_history_input)
 
 # ------------------------------------------------------------------------------
-# 6. CHARGEMENT ET DÉTECTION ROBUSTE DES FICHIERS PAR SIGNATURE ZEENDOC
+# 6. CHARGEMENT ET DÉTECTION PAR SIGNATURE ZEENDOC
 # ------------------------------------------------------------------------------
 @st.cache_data(show_spinner="Analyse rapide des fichiers Excel...")
 def load_all_data(uploaded_files):
@@ -208,13 +208,37 @@ def detect_filiale(df_art):
 filiale_detectee = detect_filiale(df_artis)
 
 # ------------------------------------------------------------------------------
-# 8. CALCULS ET VENTILATION PAR MOIS
+# 8. DÉTERMINATION DE LA PÉRIODE GLOBALE (AVEC CONSERVATION D'AOÛT & SEPTEMBRE)
 # ------------------------------------------------------------------------------
 mois_fr = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
     7: "Juillet", 8: "Août", 9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre"
 }
 
+def get_all_periods(df_art, df_isi):
+    p_art, p_isi = [], []
+    if not df_art.empty and 'Date' in df_art.columns:
+        p_art = pd.to_datetime(df_art['Date'], errors='coerce').dt.to_period('M').dropna().unique().tolist()
+    if not df_isi.empty and 'Date facture' in df_isi.columns:
+        p_isi = pd.to_datetime(df_isi['Date facture'], errors='coerce').dt.to_period('M').dropna().unique().tolist()
+    return sorted(list(set(p_art + p_isi)))
+
+all_periods_p = get_all_periods(df_artis, df_isiwork)
+
+if all_periods_p:
+    if len(all_periods_p) == 1:
+        periode_globale = f"{mois_fr.get(all_periods_p[0].month, str(all_periods_p[0].month))} {all_periods_p[0].year}"
+    else:
+        m_start = f"{mois_fr.get(all_periods_p[0].month, str(all_periods_p[0].month))} {all_periods_p[0].year}"
+        m_end = f"{mois_fr.get(all_periods_p[-1].month, str(all_periods_p[-1].month))} {all_periods_p[-1].year}"
+        periode_globale = f"{m_start} et {m_end}"
+else:
+    periode_globale = "Mois non détecté"
+
+df_artis_filtered = df_artis
+df_isiwork_filtered = df_isiwork
+
+# Ventilation par mois pour la Vision Filiale
 @st.cache_data
 def compute_monthly_breakdown(df_art_in, df_isi_in):
     df_art = df_art_in.copy()
@@ -246,7 +270,7 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
         
         tot_art = len(sub_art)
         if tot_art > 0 and 'Statut' in sub_art.columns:
-            art_batch = len(sub_art[sub_art['Statut'] == 'Bon à payer'])
+            art_batch = len(sub_art[sub_art['Statut'].notna() & (sub_art['Statut'] != '')])
             art_man = tot_art - art_batch
             pct_batch = (art_batch / tot_art) * 100
             pct_man = (art_man / tot_art) * 100
@@ -305,32 +329,13 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
         rows_erp.append({
             "Mois Comptable": label_mois,
             "💻 Volume Intégré Artis": tot_art,
-            "🤖 Via Batch Automatique (admin)": f"{pct_batch:.1f}% ({art_batch})",
-            "👤 Saisie / Forçage Manuel ERP": f"{pct_man:.1f}% ({art_man})"
+            "🤖 Via Import Automatique": f"{pct_batch:.1f}% ({art_batch})",
+            "👤 Saisie Directe / Forçage Manuel ERP": f"{pct_man:.1f}% ({art_man})"
         })
 
     return pd.DataFrame(rows_ged), pd.DataFrame(rows_erp), all_periods
 
 df_ged_monthly, df_erp_monthly, valid_periods = compute_monthly_breakdown(df_artis, df_isiwork)
-
-# Filtrage DataFrames
-if valid_periods and not df_artis.empty and 'Date' in df_artis.columns:
-    df_artis_filtered = df_artis[pd.to_datetime(df_artis['Date'], errors='coerce').dt.to_period('M').isin(valid_periods)]
-else:
-    df_artis_filtered = df_artis
-
-if valid_periods and not df_isiwork.empty and 'Date facture' in df_isiwork.columns:
-    df_isiwork_filtered = df_isiwork[pd.to_datetime(df_isiwork['Date facture'], errors='coerce').dt.to_period('M').isin(valid_periods)]
-else:
-    df_isiwork_filtered = df_isiwork
-
-if not df_ged_monthly.empty:
-    if len(df_ged_monthly) == 1:
-        periode_globale = df_ged_monthly["Mois Comptable"].iloc[0]
-    else:
-        periode_globale = f"{df_ged_monthly['Mois Comptable'].iloc[0]} et {df_ged_monthly['Mois Comptable'].iloc[-1]}"
-else:
-    periode_globale = "Mois non détecté"
 
 # ------------------------------------------------------------------------------
 # 9. EXTRACTION DYNAMIQUE TOPS FOURNISSEURS
@@ -340,7 +345,6 @@ txt_top_faux_html = ""
 
 if not df_isiwork_filtered.empty and 'Statut de rapprochement' in df_isiwork_filtered.columns:
     sub_isi_f = df_isiwork_filtered.copy()
-    
     notes_all = sub_isi_f['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in sub_isi_f.columns else pd.Series('', index=sub_isi_f.index)
     export_erp = sub_isi_f['Date export ERP'].fillna('').astype(str) if 'Date export ERP' in sub_isi_f.columns else pd.Series('', index=sub_isi_f.index)
     pattern_ged_pure = 'FAF|TRAIT|ARTIS|ARCHIV|DÉJÀ TRAITÉ'
@@ -350,10 +354,8 @@ if not df_isiwork_filtered.empty and 'Statut de rapprochement' in df_isiwork_fil
     ged_pure_mask = not_auto_mask & is_faf
     
     sub_isi_epure = sub_isi_f[~ged_pure_mask].copy()
-    
     df_man_epure = sub_isi_epure[sub_isi_epure['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)].copy()
     notes_man_epure = df_man_epure['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in df_man_epure.columns else pd.Series('', index=df_man_epure.index)
-    
     mask_faux = notes_man_epure.str.contains('FRAIS|PORT|D3EE|DEEE', case=False, regex=True)
     
     df_vrai_fourn = df_man_epure[~mask_faux]
@@ -407,7 +409,6 @@ with tab1:
         
         st.markdown("---")
         st.markdown("### ✉️ Aperçu du Mail (Prêt à copier pour Outlook / Teams)")
-        st.info("Sélectionnez le texte ci-dessous et collez-le directement dans Outlook : les tableaux et emojis se formeront parfaitement !")
         
         table_ged_html = df_ged_monthly.to_html(index=False, border=1, classes='content-table')
         table_erp_html = df_erp_monthly.to_html(index=False, border=1, classes='content-table')
@@ -418,38 +419,18 @@ with tab1:
             
             <p>Vous trouverez ci-dessous l'analyse détaillée des performances du flux de rapprochement automatique des factures fournisseurs pour <b>{filiale_detectee}</b>, consolidée sur la période de <b>{periode_globale}</b>.</p>
             
-            <p>Conformément aux directives du Groupe, nous appliquons la méthodologie d'<b>isolation des flux « GED Pure / FAF Artis »</b> (factures d'archivage directement traitées de bout en bout dans l'ERP sans rapprochement en GED) afin de refléter l'efficacité machine réelle d'Isiwork.</p>
+            <p>Conformément aux directives du Groupe, nous appliquons la méthodologie d'<b>isolation des flux « GED Pure / FAF Artis »</b> afin de refléter l'efficacité machine réelle d'Isiwork.</p>
             
             <h3 style="color: #0056b3; margin-top: 20px;">📈 1. VISION GED / ISIWORK — Typologie des flux dans la GED</h3>
             {table_ged_html}
-            
-            <p style="font-size: 12px; color: #555; margin-top: 10px;">
-                <b>Légende des états :</b><br>
-                • <b>🤖 Rapprochement Auto :</b> Factures rapprochées à 100% automatiquement sans aucune intervention.<br>
-                • <b>🚚 Faux Manuel :</b> Marchandises 100% conformes, mais forçage manuel pour l'ajout de frais annexes (port, DEEE).<br>
-                • <b>🛠️ Vrai Manuel :</b> Blocage humain obligatoire suite à des écarts de prix ou de quantités sur les produits.<br>
-                • <b>📁 Flux GED pure :</b> Pièces d'archivage direct saisies sur l'ERP sans passer par le circuit de rapprochement GED.<br>
-                • <b>⏳ En attente :</b> Pièces en cours de validation (effet clôture mensuelle).
-            </p>
             
             <h3 style="color: #0056b3; margin-top: 20px;">💻 2. VISION ERP ARTIS — Intégration et traitement réel dans l'ERP</h3>
             {table_erp_html}
             
             <h3 style="color: #0056b3; margin-top: 20px;">🔍 3. FOCUS ACTIONS — Analyse des "Vrais Manuels" & Frictions</h3>
-            <p><b>• Top 5 Fournisseurs bloquants (Écarts prix/réf) :</b></p>
+            <p><b>• Top 5 Fournisseurs bloquants :</b></p>
             <ul>
                 {txt_top_vrai_html}
-            </ul>
-            
-            <p><b>• Top Faux Manuels (Frais de port et frais annexes isolés) :</b></p>
-            <ul>
-                {txt_top_faux_html}
-            </ul>
-            
-            <h3 style="color: #0056b3; margin-top: 20px;">⚙️ 4. SUIVI DES CHANTIERS TECHNIQUES & PERSPECTIVES</h3>
-            <ul>
-                <li><b>Stabilité opérationnelle de l'ERP :</b> L'injection finale en comptabilité confirme la performance du batch automatique sans intervention utilisateur.</li>
-                <li><b>Levier "Frais Annexes" :</b> Les Faux Manuels s'expliquent par l'absence des lignes de frais de port ou DEEE sur la commande d'achat ou le BL initial. Au niveau d'Isiwork, il est alors trop tard pour automatiser. Pour éliminer ces blocages, ces frais doivent impérativement être saisis en amont lors de la création de la commande ou de la réception du BL dans Artis.</li>
             </ul>
             
             <p>Cordialement,</p>
@@ -458,63 +439,25 @@ with tab1:
             Potentiale</p>
         </div>
         """
-        
-        st.markdown("""
-        <style>
-            .content-table {
-                border-collapse: collapse;
-                margin: 15px 0;
-                font-size: 13px;
-                min-width: 100%;
-                border: 1px solid #dddddd;
-            }
-            .content-table th {
-                background-color: #0056b3;
-                color: #ffffff;
-                text-align: left;
-                padding: 8px 12px;
-            }
-            .content-table td {
-                padding: 8px 12px;
-                border: 1px solid #dddddd;
-            }
-            .content-table tr:nth-of-type(even) {
-                background-color: #f9f9f9;
-            }
-        </style>
-        """, unsafe_allow_html=True)
-        
-        st.components.v1.html(mail_html, height=850, scrolling=True)
+        st.components.v1.html(mail_html, height=800, scrolling=True)
         
     else:
         st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
 
 # ==============================================================================
-# ONGLET 2 : CONSOLIDATION GROUPE (TABLE DE CORRESPONDANCE DIRECTE)
+# ONGLET 2 : CONSOLIDATION GROUPE (AVEC HISTORIQUE M-1 ET MODÈLE MAIL HISTORIQUE)
 # ==============================================================================
 with tab2:
-    st.subheader("🌍 Consolidation Inter-Filiales — Groupe Koesio")
-    
-    if dict_hist_m1:
-        st.success(f"📜 **Mail PDF M-1 chargé** : Données historiques extraites pour {len(dict_hist_m1)} filiales.")
-        if list_chantiers_m1:
-            st.info("⚙️ **Chantiers historiques M-1 identifiés :**\n" + "\n".join([f"• {c}" for c in list_chantiers_m1[:4]]))
+    st.subheader(f"🌍 Consolidation Inter-Filiales — Groupe Koesio ({periode_globale})")
     
     if not df_artis_filtered.empty and 'Organisation interne' in df_artis_filtered.columns:
         filiales_groupe = df_artis_filtered['Organisation interne'].dropna().unique().tolist()
         
-        st.success(f"🏢 **{len(filiales_groupe)} filiales actives chargées** : {', '.join(map(str, filiales_groupe))}")
+        st.success(f"🏢 **{len(filiales_groupe)} filiales actives chargées pour {periode_globale}** : {', '.join(map(str, filiales_groupe))}")
         
         rows_ged_raw = []
-        tot_vol_brut = 0
-        tot_ged_pure = 0
-        tot_vol_epure = 0
-        tot_auto = 0
-        tot_faux = 0
-        tot_vrai = 0
-        tot_att = 0
+        tot_vol_brut, tot_ged_pure, tot_vol_epure, tot_auto, tot_faux, tot_vrai, tot_att = 0, 0, 0, 0, 0, 0, 0
         
-        # TABLE DE CORRESPONDANCE DIRECTE EN DUR
         CORRESPONDANCE_ZEENDOC = {
             "KOESIO NORD OUEST": ["KOESIO NORD-OUEST", "KOESIO NORD OUEST", "KNO"],
             "KOESIO NORD-OUEST": ["KOESIO NORD-OUEST", "KOESIO NORD OUEST", "KNO"],
@@ -535,12 +478,9 @@ with tab2:
             
             if 'Organisation_Zeendoc' in df_isiwork_filtered.columns:
                 termes_zeendoc = CORRESPONDANCE_ZEENDOC.get(f, [f])
-                
-                # Match direct sur la signature Zeendoc
                 mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].astype(str).str.upper().apply(
                     lambda x: any(term.upper() in x for term in termes_zeendoc)
                 )
-                
                 sub_isi_f = df_isiwork_filtered[mask_isi].copy()
             else:
                 sub_isi_f = pd.DataFrame()
@@ -554,17 +494,14 @@ with tab2:
                 
                 notes_f = sub_isi_f['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in sub_isi_f.columns else pd.Series('', index=sub_isi_f.index)
                 export_erp_f = sub_isi_f['Date export ERP'].fillna('').astype(str) if 'Date export ERP' in sub_isi_f.columns else pd.Series('', index=sub_isi_f.index)
-                
                 pattern_ged_pure = 'FAF|TRAIT|ARTIS|ARCHIV|DÉJÀ TRAITÉ'
                 is_faf = notes_f.str.contains(pattern_ged_pure, case=False, regex=True) | export_erp_f.str.contains(pattern_ged_pure, case=False, regex=True) | sub_isi_f['Statut de rapprochement'].isna()
                 
                 ged_pure_mask = not_auto_mask & is_faf
                 ged_pure = ged_pure_mask.sum()
-                
                 vol_epure = max(0, vol_brut - ged_pure)
                 
                 sub_isi_f_epure = sub_isi_f[~ged_pure_mask].copy()
-                
                 df_man_f_epure = sub_isi_f_epure[sub_isi_f_epure['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)].copy() if 'Statut de rapprochement' in sub_isi_f_epure.columns else pd.DataFrame()
                 notes_f_epure = df_man_f_epure['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in df_man_f_epure.columns else pd.Series('', index=df_man_f_epure.index)
                 
@@ -575,7 +512,6 @@ with tab2:
                 auto_c, faux_c, vrai_c, ged_pure, att_c, vol_epure = 0, 0, 0, 0, 0, 0
 
             denom = vol_epure if vol_epure > 0 else 1
-            
             pct_a = (auto_c / denom * 100) if vol_epure > 0 else 0
             pct_f = (faux_c / denom * 100) if vol_epure > 0 else 0
             pct_v = (vrai_c / denom * 100) if vol_epure > 0 else 0
@@ -606,7 +542,7 @@ with tab2:
                 "pct_pot": pct_pot
             })
 
-        # TRI : % RAPPROCHEMENT AUTO DESCENDANT, PUIS VOL. ÉPURÉ DESCENDANT
+        # TRI TABLEAU 1 : % AUTO DESC, PUIS VOL. ÉPURÉ DESC
         df_ged_temp = pd.DataFrame(rows_ged_raw)
         df_ged_temp = df_ged_temp.sort_values(by=["pct_a", "Vol. Épuré"], ascending=[False, False]).reset_index(drop=True)
         
@@ -617,13 +553,21 @@ with tab2:
             auto_c_val = row["auto_c"]
             
             str_eval_auto = f"{pct_a_val:.1f}% ({auto_c_val})"
-            if dict_hist_m1:
-                for key_h, val_h in dict_hist_m1.items():
-                    if f_name.upper() in key_h.upper() or key_h.upper() in f_name.upper():
-                        delta_a = pct_a_val - val_h.get("auto_pct_m1", pct_a_val)
-                        symb = "↗️" if delta_a > 0 else "↘️" if delta_a < 0 else "➡️"
-                        str_eval_auto += f" [{symb} {delta_a:+.1f}% vs M-1]"
-                        break
+            m1_val = None
+            for key_h, val_h in dict_hist_m1.items():
+                if f_name.upper() in key_h.upper() or key_h.upper() in f_name.upper():
+                    m1_val = val_h
+                    break
+                    
+            if m1_val is not None:
+                delta_a = pct_a_val - m1_val
+                if delta_a > 0.05:
+                    symb = "↗️"
+                elif delta_a < -0.05:
+                    symb = "↘️"
+                else:
+                    symb = "➡️"
+                str_eval_auto += f" [{symb} {delta_a:+.1f}% vs M-1]"
 
             rows_ged_groupe.append({
                 "Rang": idx + 1,
@@ -643,13 +587,17 @@ with tab2:
         pct_tot_v = (tot_vrai / tot_vol_epure * 100) if tot_vol_epure > 0 else 0
         pct_tot_att = (tot_att / tot_vol_epure * 100) if tot_vol_epure > 0 else 0
         
+        m1_tot_val = dict_hist_m1.get("TOTAL GROUPE CONSOLIDÉ", 36.6)
+        delta_tot = pct_tot_a - m1_tot_val
+        symb_tot = "↗️" if delta_tot > 0.05 else "↘️" if delta_tot < -0.05 else "➡️"
+        
         rows_ged_groupe.append({
             "Rang": "—",
             "Filiale Groupe": "TOTAL GROUPE CONSOLIDÉ",
             "Vol. Brut GED": tot_vol_brut,
             "Flux GED Pure": f"{tot_ged_pure}",
             "Vol. Épuré": tot_vol_epure,
-            "🤖 Rapprochement Auto (Évolution M vs M-1)": f"{pct_tot_a:.1f}% ({tot_auto})",
+            "🤖 Rapprochement Auto (Évolution M vs M-1)": f"{pct_tot_a:.1f}% ({tot_auto}) [{symb_tot} {delta_tot:+.1f}% vs M-1]",
             "🚚 Faux Manuel (Frais)": f"{pct_tot_f:.1f}% ({tot_faux})",
             "🛠️ Vrai Manuel (Litiges)": f"{pct_tot_v:.1f}% ({tot_vrai})",
             "⏳ En attente": f"{pct_tot_att:.1f}% ({tot_att})",
@@ -658,17 +606,16 @@ with tab2:
         
         df_ged_groupe = pd.DataFrame(rows_ged_groupe)
         
-        rows_erp_groupe = []
-        tot_art_all = 0
-        tot_batch_all = 0
-        tot_man_all = 0
+        # TABLEAU 2 (ARTIS) : STATUT NON VIDE = IMPORT AUTO / STATUT VIDE = SAISIE DIRECTE
+        rows_erp_raw = []
+        tot_art_all, tot_batch_all, tot_man_all = 0, 0, 0
         
-        for idx, f in enumerate(filiales_groupe, start=1):
+        for f in filiales_groupe:
             sub_art_f = df_artis_filtered[df_artis_filtered['Organisation interne'] == f]
             tot_art_f = len(sub_art_f)
             
             if tot_art_f > 0 and 'Statut' in sub_art_f.columns:
-                batch_c = len(sub_art_f[sub_art_f['Statut'] == 'Bon à payer'])
+                batch_c = len(sub_art_f[sub_art_f['Statut'].notna() & (sub_art_f['Statut'] != '')])
                 man_c = tot_art_f - batch_c
                 pct_b = (batch_c / tot_art_f) * 100
                 pct_m = (man_c / tot_art_f) * 100
@@ -679,12 +626,26 @@ with tab2:
             tot_batch_all += batch_c
             tot_man_all += man_c
             
-            rows_erp_groupe.append({
-                "Rang": idx,
+            rows_erp_raw.append({
                 "Filiale Groupe": f,
                 "Total Pièces Validées Artis": tot_art_f,
-                "🤖 Batch Automatique (admin)": f"{pct_b:.1f}% ({batch_c})",
-                "👤 Saisie / Forçage Manuel ERP": f"{pct_m:.1f}% ({man_c})"
+                "batch_c": batch_c,
+                "pct_b": pct_b,
+                "man_c": man_c,
+                "pct_m": pct_m
+            })
+            
+        df_erp_temp = pd.DataFrame(rows_erp_raw)
+        df_erp_temp = df_erp_temp.sort_values(by=["pct_b", "Total Pièces Validées Artis"], ascending=[False, False]).reset_index(drop=True)
+        
+        rows_erp_groupe = []
+        for idx, row in df_erp_temp.iterrows():
+            rows_erp_groupe.append({
+                "Rang": idx + 1,
+                "Filiale Groupe": row["Filiale Groupe"],
+                "Total Pièces Validées Artis": row["Total Pièces Validées Artis"],
+                "🤖 Via Import Automatique": f"{row['pct_b']:.1f}% ({row['batch_c']})",
+                "👤 Saisie Directe / Forçage Manuel ERP": f"{row['pct_m']:.1f}% ({row['man_c']})"
             })
             
         pct_tot_batch = (tot_batch_all / tot_art_all * 100) if tot_art_all > 0 else 0
@@ -694,8 +655,8 @@ with tab2:
             "Rang": "—",
             "Filiale Groupe": "TOTAL ERP CONSOLIDÉ",
             "Total Pièces Validées Artis": tot_art_all,
-            "🤖 Batch Automatique (admin)": f"{pct_tot_batch:.1f}% ({tot_batch_all})",
-            "👤 Saisie / Forçage Manuel ERP": f"{pct_tot_man_erp:.1f}% ({tot_man_all})"
+            "🤖 Via Import Automatique": f"{pct_tot_batch:.1f}% ({tot_batch_all})",
+            "👤 Saisie Directe / Forçage Manuel ERP": f"{pct_tot_man_erp:.1f}% ({tot_man_all})"
         })
         
         df_erp_groupe = pd.DataFrame(rows_erp_groupe)
@@ -712,11 +673,13 @@ with tab2:
             
         st.markdown("---")
         
-        st.markdown("### 📈 1. VISION GED / ISIWORK — Rapprochement National Consolidé (Évolutions)")
+        st.markdown(f"### 📈 1. VISION GED / ISIWORK — Rapprochement National Consolidé ({periode_globale})")
         st.dataframe(df_ged_groupe, hide_index=True, use_container_width=True)
         
-        st.markdown("### 💻 2. VISION ERP ARTIS — Journal d'Intégration National Consolidé")
+        st.markdown(f"### 💻 2. VISION ERP ARTIS — Journal d'Intégration National Consolidé ({periode_globale})")
         st.dataframe(df_erp_groupe, hide_index=True, use_container_width=True)
+        
+        st.caption("ℹ️ **Note sur l'intégration ERP** : Certaines factures d'achat (abonnements, sous-traitance) peuvent se retrouver en saisie directe dans ARTIS, mais l'essentiel du flux doit transiter par Isiwork. Si ce n'est pas le cas, une analyse des pièces saisies en direct s'impose (ex. cas connu chez EOLE : TVA à 0%).")
         
         st.markdown("---")
         st.markdown("### ✉️ Modèle de Mail National Consolidé avec Historique (Prêt à copier)")
@@ -724,7 +687,7 @@ with tab2:
         table_ged_groupe_html = df_ged_groupe.to_html(index=False, border=1, classes='content-table')
         table_erp_groupe_html = df_erp_groupe.to_html(index=False, border=1, classes='content-table')
         
-        txt_chantiers_html = "".join([f"<li>{c}</li>" for c in list_chantiers_m1]) if list_chantiers_m1 else "<li><b>Suivi des référentiels prix :</b> Action continue sur SHARP, ACTUAL SYSTEMES, KATUN FRANCE.</li><li><b>Correction TVA :</b> Suivi de la livraison de l'API Artis v2.</li>"
+        txt_chantiers_html = "".join([f"<li>{c}</li>" for c in list_chantiers_m1])
         
         mail_groupe_html = f"""
         <div style="font-family: Arial, sans-serif; font-size: 14px; color: #222; line-height: 1.5; padding: 10px; background-color: #ffffff; border-radius: 5px;">
@@ -739,6 +702,9 @@ with tab2:
             
             <h3 style="color: #0056b3; margin-top: 20px;">💻 2. VISION ERP ARTIS — Journal d'Intégration National</h3>
             {table_erp_groupe_html}
+            <p style="font-size: 12px; color: #555; margin-top: 5px;">
+                <i>* Note : Certaines factures d'achat (abonnements, sous-traitance) peuvent se retrouver en saisie directe dans ARTIS, mais le flux doit être majoritairement issu d'Isiwork. Si ce n'est pas le cas, une analyse des pièces saisies en direct s'impose (ex. cas connu chez EOLE : TVA à 0%).</i>
+            </p>
             
             <h3 style="color: #0056b3; margin-top: 20px;">🔍 3. FOCUS ACTIONS — Enseignements Clés du Groupe</h3>
             <p><b>• Alerte Référentiels Prix :</b> L'analyse des blocages « Vrais Manuels » montre que la charge de traitement réside principalement sur un problème de mise à jour tarifaire en amont sur nos partenaires stratégiques (TD SYNNEX, ACTUAL SYSTEMES, CANON FRANCE, SHARP).</p>
