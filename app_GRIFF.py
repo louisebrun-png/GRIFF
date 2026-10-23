@@ -139,7 +139,7 @@ def parse_pdf_history_full(pdf_file):
 dict_hist_m1, list_chantiers_m1 = parse_pdf_history_full(file_history_input) if file_history_input else ({}, [])
 
 # ------------------------------------------------------------------------------
-# 6. CHARGEMENT ET DÉTECTION ROBUSTE DES FICHIERS
+# 6. CHARGEMENT ET DÉTECTION ROBUSTE DES FICHIERS PAR SIGNATURE ZEENDOC
 # ------------------------------------------------------------------------------
 @st.cache_data(show_spinner="Analyse rapide des fichiers Excel...")
 def load_all_data(uploaded_files):
@@ -179,6 +179,11 @@ def load_all_data(uploaded_files):
                     df_art = pd.read_excel(file)
                 else:
                     df_art = pd.read_csv(file)
+                
+                # Normalisation nom Aquitaine
+                if 'Organisation interne' in df_art.columns:
+                    df_art['Organisation interne'] = df_art['Organisation interne'].replace('KOESIO AQUITAINE (EX GTO)', 'KOESIO AQUITAINE')
+                    
                 art_list.append(df_art)
                 
         except Exception as e:
@@ -486,7 +491,7 @@ with tab1:
         st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
 
 # ==============================================================================
-# ONGLET 2 : CONSOLIDATION GROUPE (TRIÉ DU PLUS GRAND % AUTO AU PLUS PETIT)
+# ONGLET 2 : CONSOLIDATION GROUPE
 # ==============================================================================
 with tab2:
     st.subheader("🌍 Consolidation Inter-Filiales — Groupe Koesio")
@@ -516,7 +521,6 @@ with tab2:
             "KOESIO NORD-OUEST": ["NORD OUEST", "NORD-OUEST", "KNO"],
             "KOESIO OUEST": ["KOESIO OUEST"],
             "KOESIO AQUITAINE": ["JEAPI AQUITAINE", "AQUITAINE"],
-            "KOESIO AQUITAINE (EX GTO)": ["JEAPI AQUITAINE", "AQUITAINE"],
             "KOESIO EST": ["KOESIO EST", "EST"],
             "KOESIO MEDITERRANEE": ["KOESIO MED", "MEDITERRANEE"],
             "2IT SOLUTIONS": ["RHONE ALPES REPRO INFORMATIQUE", "2IT"],
@@ -532,7 +536,6 @@ with tab2:
             if 'Organisation_Zeendoc' in df_isiwork_filtered.columns:
                 mask_isi = pd.Series(False, index=df_isiwork_filtered.index)
                 
-                # Regle stricte Nord-Ouest / Nord OUEST vs Ouest
                 f_clean = f.upper().replace("-", " ")
                 if "NORD" in f_clean and "OUEST" in f_clean:
                     mask_isi = df_isiwork_filtered['Organisation_Zeendoc'].str.contains("NORD", case=False, na=False)
