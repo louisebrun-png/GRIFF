@@ -116,7 +116,7 @@ def detect_filiale(df_art):
 filiale_detectee = detect_filiale(df_artis)
 
 # ------------------------------------------------------------------------------
-# 6. CALCULS ET VENTILATION PAR MOIS
+# 6. CALCULS ET VENTILATION PAR MOIS (AVEC EMOJIS STYLE EN-TÊTE)
 # ------------------------------------------------------------------------------
 mois_fr = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
@@ -195,19 +195,19 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
 
         rows_ged.append({
             "Mois Comptable": label_mois,
-            "Total Factures Traitées": tot_isi,
-            "Rapprochement Auto": f"{pct_a:.1f}% ({auto_c})",
-            "Faux Manuel (Frais/Port)": f"{pct_f:.1f}% ({faux_c})",
-            "Vrai Manuel (Écarts)": f"{pct_v:.1f}% ({vrai_c})",
-            "Flux GED pure (Saisie direct ERP / FAF)": f"{pct_gp:.1f}% ({ged_pure_c})",
-            "En attente": f"{pct_att:.1f}% ({attente_c})"
+            "📋 Volumétrie GED": tot_isi,
+            "📁 Flux GED Pure (FAF Artis)": f"{pct_gp:.1f}% ({ged_pure_c})",
+            "🤖 Rapprochement Auto": f"{pct_a:.1f}% ({auto_c})",
+            "🚚 Faux Manuel (Frais/Port)": f"{pct_f:.1f}% ({faux_c})",
+            "🛠️ Vrai Manuel (Écarts)": f"{pct_v:.1f}% ({vrai_c})",
+            "⏳ En attente": f"{pct_att:.1f}% ({attente_c})"
         })
 
         rows_erp.append({
             "Mois Comptable": label_mois,
-            "Volume Intégré Artis": tot_art,
-            "Via Batch Automatique (admin)": f"{pct_batch:.1f}% ({art_batch})",
-            "Saisie / Forçage Manuel ERP": f"{pct_man:.1f}% ({art_man})"
+            "💻 Volume Intégré Artis": tot_art,
+            "🤖 Via Batch Automatique (admin)": f"{pct_batch:.1f}% ({art_batch})",
+            "👤 Saisie / Forçage Manuel ERP": f"{pct_man:.1f}% ({art_man})"
         })
 
     return pd.DataFrame(rows_ged), pd.DataFrame(rows_erp), all_periods
@@ -251,11 +251,11 @@ if not df_isiwork_filtered.empty and 'Statut de rapprochement' in df_isiwork_fil
     
     if not df_vrai_fourn.empty and 'Fournisseur' in df_vrai_fourn.columns:
         s_vrai = df_vrai_fourn['Fournisseur'].value_counts().head(5)
-        txt_top_vrai_html = "".join([f"<li><b>{fourn}</b> : {cnt} facture(s)</li>" for fourn, cnt in s_vrai.items()])
+        txt_top_vrai_html = "".join([f"<li><b>{fourn}</b> : {cnt} factures</li>" for fourn, cnt in s_vrai.items()])
     
     if not df_faux_fourn.empty and 'Fournisseur' in df_faux_fourn.columns:
         s_faux = df_faux_fourn['Fournisseur'].value_counts().head(5)
-        txt_top_faux_html = "".join([f"<li><b>{fourn}</b> : {cnt} facture(s)</li>" for fourn, cnt in s_faux.items()])
+        txt_top_faux_html = "".join([f"<li><b>{fourn}</b> : {cnt} factures</li>" for fourn, cnt in s_faux.items()])
 
 if not txt_top_vrai_html:
     txt_top_vrai_html = "<li><b>TD SYNNEX</b></li><li><b>ACTUAL SYSTEMES</b></li><li><b>CANON FRANCE</b></li>"
@@ -289,17 +289,16 @@ with tab1:
             
         st.markdown("---")
         
-        st.markdown("### 1. Vision GED — Typologie des flux dans Isiwork (Lignes par Mois)")
+        st.markdown("### 📈 1. VISION GED / ISIWORK — Typologie des flux dans la GED")
         st.dataframe(df_ged_monthly, hide_index=True, use_container_width=True)
         
-        st.markdown("### 2. Vision ERP — Intégration et traitement réel dans Artis (Lignes par Mois)")
+        st.markdown("### 💻 2. VISION ERP ARTIS — Intégration et traitement réel dans l'ERP")
         st.dataframe(df_erp_monthly, hide_index=True, use_container_width=True)
         
         st.markdown("---")
         st.markdown("### ✉️ Aperçu du Mail (Prêt à copier pour Outlook / Teams)")
-        st.info("Sélectionnez le texte ci-dessous et collez-le directement dans Outlook : les tableaux se formeront automatiquement !")
+        st.info("Sélectionnez le texte ci-dessous et collez-le directement dans Outlook : les tableaux et emojis se formeront parfaitement !")
         
-        # Conversion des DataFrames en tableaux HTML propres avec bordures légères
         table_ged_html = df_ged_monthly.to_html(index=False, border=1, classes='content-table')
         table_erp_html = df_erp_monthly.to_html(index=False, border=1, classes='content-table')
         
@@ -309,50 +308,47 @@ with tab1:
             
             <p>Vous trouverez ci-dessous l'analyse détaillée des performances du flux de rapprochement automatique des factures fournisseurs pour <b>{filiale_detectee}</b>, consolidée sur la période de <b>{periode_globale}</b>.</p>
             
-            <p>Afin de maintenir une analyse d'une grande rigueur opérationnelle, nous appliquons la méthodologie de lecture fine des tampons et des lignes de commentaires Isiwork. Cela nous permet de dissocier les rapprochements purement bloquants sur les produits des "Faux Manuels" (factures validées humainement à cause de frais annexes ou de port non saisis sur le BC initial) afin d'identifier les leviers précis de performance.</p>
+            <p>Conformément aux directives du Groupe, nous appliquons la méthodologie d'<b>isolation des flux « GED Pure / FAF Artis »</b> (factures d'archivage directement traitées de bout en bout dans l'ERP sans rapprochement en GED) afin de refléter l'efficacité machine réelle d'Isiwork.</p>
             
-            <h3 style="color: #0056b3; margin-top: 20px;">1. Vision GED — Typologie des flux dans Isiwork</h3>
+            <h3 style="color: #0056b3; margin-top: 20px;">📈 1. VISION GED / ISIWORK — Typologie des flux dans la GED</h3>
             {table_ged_html}
             
             <p style="font-size: 12px; color: #555; margin-top: 10px;">
                 <b>Légende des états :</b><br>
-                • <b>Rapprochement Auto :</b> Factures rapprochées à 100% automatiquement sans aucune intervention.<br>
-                • <b>Faux Manuel :</b> Marchandises 100% conformes, mais forçage manuel pour l'ajout de frais annexes (port, DEEE).<br>
-                • <b>Vrai Manuel :</b> Blocage humain obligatoire suite à des écarts de prix ou de quantités sur les produits.<br>
-                • <b>Flux GED pure :</b> Pièces saisies directement sur l'ERP sans passer par le circuit de rapprochement GED (inclut tampons FAF ARTIS).<br>
-                • <b>En attente :</b> Pièces en cours de validation (effet clôture mensuelle).
+                • <b>🤖 Rapprochement Auto :</b> Factures rapprochées à 100% automatiquement sans aucune intervention.<br>
+                • <b>🚚 Faux Manuel :</b> Marchandises 100% conformes, mais forçage manuel pour l'ajout de frais annexes (port, DEEE).<br>
+                • <b>🛠️ Vrai Manuel :</b> Blocage humain obligatoire suite à des écarts de prix ou de quantités sur les produits.<br>
+                • <b>📁 Flux GED pure :</b> Pièces saisies directement sur l'ERP sans passer par le circuit de rapprochement GED (inclut tampons FAF ARTIS).<br>
+                • <b>⏳ En attente :</b> Pièces en cours de validation (effet clôture mensuelle).
             </p>
             
-            <h3 style="color: #0056b3; margin-top: 20px;">2. Vision ERP — Intégration et traitement réel dans Artis</h3>
+            <h3 style="color: #0056b3; margin-top: 20px;">💻 2. VISION ERP ARTIS — Intégration et traitement réel dans l'ERP</h3>
             {table_erp_html}
             
-            <h3 style="color: #0056b3; margin-top: 20px;">3. Focus Actions / Analyse des rapprochements manuels</h3>
-            <p><b>a) Top 5 des fournisseurs avec de Vrais Écarts (Prix / Références / Quantités) :</b></p>
+            <h3 style="color: #0056b3; margin-top: 20px;">🔍 3. FOCUS ACTIONS — Analyse des "Vrais Manuels" & Frictions</h3>
+            <p><b>• Top 5 Fournisseurs bloquants (Écarts prix/réf) :</b></p>
             <ul>
                 {txt_top_vrai_html}
             </ul>
             
-            <p><b>b) Top des fournisseurs concernés par des "Faux Manuels" (Ajustements Frais de Port / Éco-participation DEEE) :</b></p>
+            <p><b>• Top Faux Manuels (Frais de port et frais annexes isolés) :</b></p>
             <ul>
                 {txt_top_faux_html}
             </ul>
             
-            <h3 style="color: #0056b3; margin-top: 20px;">4. Suivi des chantiers techniques et conclusion</h3>
+            <h3 style="color: #0056b3; margin-top: 20px;">⚙️ 4. SUIVI DES CHANTIERS TECHNIQUES & PERSPECTIVES</h3>
             <ul>
                 <li><b>Stabilité opérationnelle de l'ERP :</b> L'injection finale en comptabilité confirme la performance du batch automatique sans intervention utilisateur.</li>
                 <li><b>Levier "Frais Annexes" :</b> Les Faux Manuels s'expliquent par l'absence des lignes de frais de port ou DEEE sur la commande d'achat ou le BL initial. Au niveau d'Isiwork, il est alors trop tard pour automatiser. Pour éliminer ces blocages, ces frais doivent impérativement être saisis en amont lors de la création de la commande ou de la réception du BL dans Artis.</li>
             </ul>
             
-            <p>Nous restons à votre entière disposition pour échanger sur ce bilan.</p>
-            
-            <p>Bien cordialement,<br>
-            <b>Louise BRUN</b><br>
+            <p>Cordialement,</p>
+            <p><b>Louise BRUN</b><br>
             Chef de projet pour KOESIO GROUPE & KAM<br>
             Potentiale</p>
         </div>
         """
         
-        # Styles CSS injectés pour forcer l'élégance des tableaux lors du copier-coller
         st.markdown("""
         <style>
             .content-table {
@@ -378,7 +374,6 @@ with tab1:
         </style>
         """, unsafe_allow_html=True)
         
-        # Affichage HTML natif interprétable par la souris
         st.components.v1.html(mail_html, height=850, scrolling=True)
         
     else:
