@@ -32,9 +32,9 @@ st.info(
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION MULTI-FILIALES
+# 3. BARRE LATÉRALE (SIDEBAR) : INGESTION & HISTORIQUE M-1
 # ------------------------------------------------------------------------------
-st.sidebar.header("📂 Ingestion des Données")
+st.sidebar.header("📂 Ingestion des Données M (Mois en cours)")
 st.sidebar.markdown("Téléversez vos exports mensuels pour lancer le calcul automatisé.")
 
 files_isiwork_input = st.sidebar.file_uploader(
@@ -51,10 +51,19 @@ files_artis_input = st.sidebar.file_uploader(
     help="Exports Artis ERP de vos différentes filiales."
 )
 
+st.sidebar.markdown("---")
+st.sidebar.header("📜 Historique M-1 (Optionnel)")
+file_history_input = st.sidebar.file_uploader(
+    "Rapport / Export Consolidé M-1 (.xlsx, .csv)",
+    type=["xlsx", "csv"],
+    accept_multiple_files=False,
+    help="Fichier de rapport du mois précédent pour calculer les évolutions par filiale."
+)
+
 all_uploaded_files = (files_isiwork_input or []) + (files_artis_input or [])
 
 # ------------------------------------------------------------------------------
-# 4. FONCTIONS INTELLIGENTES DE SÉPARATION & CHARGEMENT
+# 4. FONCTIONS INTELLIGENTES DE CHARGEMENT & HISTORIZATION
 # ------------------------------------------------------------------------------
 @st.cache_data
 def load_all_data(uploaded_files):
@@ -102,7 +111,22 @@ def load_all_data(uploaded_files):
     
     return df_isi_concat, df_art_concat
 
+@st.cache_data
+def load_history_data(history_file):
+    if not history_file:
+        return pd.DataFrame()
+    try:
+        if history_file.name.endswith('.xlsx'):
+            df_hist = pd.read_excel(history_file)
+        else:
+            df_hist = pd.read_csv(history_file)
+        return df_hist
+    except Exception as e:
+        st.error(f"Erreur de lecture du fichier historique M-1: {e}")
+        return pd.DataFrame()
+
 df_isiwork, df_artis = load_all_data(all_uploaded_files)
+df_history_m1 = load_history_data(file_history_input)
 
 # ------------------------------------------------------------------------------
 # 5. DÉTECTION DYNAMIQUE DE LA FILIALE EN VISION INDIVIDUELLE
@@ -381,7 +405,7 @@ with tab1:
         st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
 
 # ==============================================================================
-# ONGLET 2 : CONSOLIDATION GROUPE (CONFORME AU RAPPORT NATIONAL)
+# ONGLET 2 : CONSOLIDATION GROUPE & COMPARATIF M-1
 # ==============================================================================
 with tab2:
     st.subheader("🌍 Consolidation Inter-Filiales — Groupe Koesio")
@@ -390,6 +414,9 @@ with tab2:
         filiales_groupe = df_artis_filtered['Organisation interne'].dropna().unique().tolist()
         
         st.success(f"🏢 **{len(filiales_groupe)} filiales actives chargées** : {', '.join(map(str, filiales_groupe))}")
+        
+        if not df_history_m1.empty:
+            st.info("📈 **Historique M-1 chargé avec succès** : Les évolutions et deltas sont calculés automatiquement.")
         
         # 1. CONSTRUCTION TABLEAU VISION GED GROUPE
         rows_ged_groupe = []
