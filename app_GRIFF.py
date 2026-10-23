@@ -236,8 +236,8 @@ else:
 # ------------------------------------------------------------------------------
 # 7. EXTRACTION DYNAMIQUE TOPS FOURNISSEURS
 # ------------------------------------------------------------------------------
-txt_top_vrai = ""
-txt_top_faux = ""
+txt_top_vrai_html = ""
+txt_top_faux_html = ""
 
 if not df_isiwork_filtered.empty and 'Statut de rapprochement' in df_isiwork_filtered.columns:
     df_man = df_isiwork_filtered[df_isiwork_filtered['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)].copy()
@@ -251,17 +251,17 @@ if not df_isiwork_filtered.empty and 'Statut de rapprochement' in df_isiwork_fil
     
     if not df_vrai_fourn.empty and 'Fournisseur' in df_vrai_fourn.columns:
         s_vrai = df_vrai_fourn['Fournisseur'].value_counts().head(5)
-        txt_top_vrai = "\n".join([f"• {fourn} : {cnt} facture(s)" for fourn, cnt in s_vrai.items()])
+        txt_top_vrai_html = "".join([f"<li><b>{fourn}</b> : {cnt} facture(s)</li>" for fourn, cnt in s_vrai.items()])
     
     if not df_faux_fourn.empty and 'Fournisseur' in df_faux_fourn.columns:
         s_faux = df_faux_fourn['Fournisseur'].value_counts().head(5)
-        txt_top_faux = "\n".join([f"• {fourn} : {cnt} facture(s)" for fourn, cnt in s_faux.items()])
+        txt_top_faux_html = "".join([f"<li><b>{fourn}</b> : {cnt} facture(s)</li>" for fourn, cnt in s_faux.items()])
 
-if not txt_top_vrai:
-    txt_top_vrai = "• TD SYNNEX\n• ACTUAL SYSTEMES\n• CANON FRANCE"
+if not txt_top_vrai_html:
+    txt_top_vrai_html = "<li><b>TD SYNNEX</b></li><li><b>ACTUAL SYSTEMES</b></li><li><b>CANON FRANCE</b></li>"
 
-if not txt_top_faux:
-    txt_top_faux = "• ACTUAL SYSTEMES\n• CANON FRANCE\n• EPARTS"
+if not txt_top_faux_html:
+    txt_top_faux_html = "<li><b>ACTUAL SYSTEMES</b></li><li><b>CANON FRANCE</b></li><li><b>EPARTS</b></li>"
 
 # ------------------------------------------------------------------------------
 # 8. ONGLETS DE NAVIGATION
@@ -296,61 +296,90 @@ with tab1:
         st.dataframe(df_erp_monthly, hide_index=True, use_container_width=True)
         
         st.markdown("---")
-        st.markdown("### ✉️ Modèle de Mail Généré Automatiquement")
-        st.info("Copiez-collez ce texte directement dans votre messagerie :")
+        st.markdown("### ✉️ Aperçu du Mail (Prêt à copier pour Outlook / Teams)")
+        st.info("Sélectionnez le texte ci-dessous et collez-le directement dans Outlook : les tableaux se formeront automatiquement !")
         
-        try:
-            table_ged_md = df_ged_monthly.to_markdown(index=False)
-            table_erp_md = df_erp_monthly.to_markdown(index=False)
-        except Exception:
-            table_ged_md = df_ged_monthly.to_string(index=False)
-            table_erp_md = df_erp_monthly.to_string(index=False)
+        # Conversion des DataFrames en tableaux HTML propres avec bordures légères
+        table_ged_html = df_ged_monthly.to_html(index=False, border=1, classes='content-table')
+        table_erp_html = df_erp_monthly.to_html(index=False, border=1, classes='content-table')
         
-        mail_formatted = f"""Bonjour à tous,
-
-Vous trouverez ci-dessous l'analyse détaillée des performances du flux de rapprochement automatique des factures fournisseurs pour {filiale_detectee}, consolidée sur la période de {periode_globale}.
-
-Afin de maintenir une analyse d'une grande rigueur opérationnelle, nous appliquons la méthodologie de lecture fine des tampons et des lignes de commentaires Isiwork. Cela nous permet de dissocier les rapprochements purement bloquants sur les produits des "Faux Manuels" (factures validées humainement à cause de frais annexes ou de port non saisis sur le BC initial) afin d'identifier les leviers précis de performance.
-
-1. Vision GED
-Typologie des flux dans Isiwork
-
-{table_ged_md}
-
-Légende des états:
-• Rapprochement Auto: Factures rapprochées à 100% automatiquement sans aucune intervention.
-• Faux Manuel: Marchandises 100% conformes, mais forçage manuel pour l'ajout de frais annexes (port, DEEE).
-• Vrai Manuel: Blocage humain obligatoire suite à des écarts de prix ou de quantités sur les produits.
-• Flux GED pure: Pièces saisies directement sur l'ERP sans passer par le circuit de rapprochement GED (inclut tampons FAF ARTIS).
-• En attente: Pièces en cours de validation (effet clôture mensuelle).
-
-
-2. Vision ERP — Intégration et traitement réel dans Artis
-
-{table_erp_md}
-
-
-3. Focus Actions / Analyse des rapprochements manuels
-
-a) Top 5 des fournisseurs avec de Vrais Écarts (Prix / Références / Quantités) :
-{txt_top_vrai}
-
-b) Top des fournisseurs concernés par des "Faux Manuels" (Ajustements Frais de Port / Éco-participation DEEE) :
-{txt_top_faux}
-
-
-4. Suivi des chantiers techniques et conclusion
-• Stabilité opérationnelle de l'ERP: L'injection finale en comptabilité confirme la performance du batch automatique sans intervention utilisateur.
-• Levier "Frais Annexes": Les Faux Manuels s'expliquent par l'absence des lignes de frais de port ou DEEE sur la commande d'achat ou le BL initial. Au niveau d'Isiwork, il est alors trop tard pour automatiser. Pour éliminer ces blocages, ces frais doivent impérativement être saisis en amont lors de la création de la commande ou de la réception du BL dans Artis.
-
-Nous restons à votre entière disposition pour échanger sur ce bilan.
-
-Bien cordialement,
-Louise BRUN
-Chef de projet pour KOESIO GROUPE & KAM
-Potentiale
-"""
-        st.code(mail_formatted, language="markdown")
+        mail_html = f"""
+        <div style="font-family: Arial, sans-serif; font-size: 14px; color: #222; line-height: 1.5; padding: 10px; background-color: #ffffff; border-radius: 5px;">
+            <p>Bonjour à tous,</p>
+            
+            <p>Vous trouverez ci-dessous l'analyse détaillée des performances du flux de rapprochement automatique des factures fournisseurs pour <b>{filiale_detectee}</b>, consolidée sur la période de <b>{periode_globale}</b>.</p>
+            
+            <p>Afin de maintenir une analyse d'une grande rigueur opérationnelle, nous appliquons la méthodologie de lecture fine des tampons et des lignes de commentaires Isiwork. Cela nous permet de dissocier les rapprochements purement bloquants sur les produits des "Faux Manuels" (factures validées humainement à cause de frais annexes ou de port non saisis sur le BC initial) afin d'identifier les leviers précis de performance.</p>
+            
+            <h3 style="color: #0056b3; margin-top: 20px;">1. Vision GED — Typologie des flux dans Isiwork</h3>
+            {table_ged_html}
+            
+            <p style="font-size: 12px; color: #555; margin-top: 10px;">
+                <b>Légende des états :</b><br>
+                • <b>Rapprochement Auto :</b> Factures rapprochées à 100% automatiquement sans aucune intervention.<br>
+                • <b>Faux Manuel :</b> Marchandises 100% conformes, mais forçage manuel pour l'ajout de frais annexes (port, DEEE).<br>
+                • <b>Vrai Manuel :</b> Blocage humain obligatoire suite à des écarts de prix ou de quantités sur les produits.<br>
+                • <b>Flux GED pure :</b> Pièces saisies directement sur l'ERP sans passer par le circuit de rapprochement GED (inclut tampons FAF ARTIS).<br>
+                • <b>En attente :</b> Pièces en cours de validation (effet clôture mensuelle).
+            </p>
+            
+            <h3 style="color: #0056b3; margin-top: 20px;">2. Vision ERP — Intégration et traitement réel dans Artis</h3>
+            {table_erp_html}
+            
+            <h3 style="color: #0056b3; margin-top: 20px;">3. Focus Actions / Analyse des rapprochements manuels</h3>
+            <p><b>a) Top 5 des fournisseurs avec de Vrais Écarts (Prix / Références / Quantités) :</b></p>
+            <ul>
+                {txt_top_vrai_html}
+            </ul>
+            
+            <p><b>b) Top des fournisseurs concernés par des "Faux Manuels" (Ajustements Frais de Port / Éco-participation DEEE) :</b></p>
+            <ul>
+                {txt_top_faux_html}
+            </ul>
+            
+            <h3 style="color: #0056b3; margin-top: 20px;">4. Suivi des chantiers techniques et conclusion</h3>
+            <ul>
+                <li><b>Stabilité opérationnelle de l'ERP :</b> L'injection finale en comptabilité confirme la performance du batch automatique sans intervention utilisateur.</li>
+                <li><b>Levier "Frais Annexes" :</b> Les Faux Manuels s'expliquent par l'absence des lignes de frais de port ou DEEE sur la commande d'achat ou le BL initial. Au niveau d'Isiwork, il est alors trop tard pour automatiser. Pour éliminer ces blocages, ces frais doivent impérativement être saisis en amont lors de la création de la commande ou de la réception du BL dans Artis.</li>
+            </ul>
+            
+            <p>Nous restons à votre entière disposition pour échanger sur ce bilan.</p>
+            
+            <p>Bien cordialement,<br>
+            <b>Louise BRUN</b><br>
+            Chef de projet pour KOESIO GROUPE & KAM<br>
+            Potentiale</p>
+        </div>
+        """
+        
+        # Styles CSS injectés pour forcer l'élégance des tableaux lors du copier-coller
+        st.markdown("""
+        <style>
+            .content-table {
+                border-collapse: collapse;
+                margin: 15px 0;
+                font-size: 13px;
+                min-width: 100%;
+                border: 1px solid #dddddd;
+            }
+            .content-table th {
+                background-color: #0056b3;
+                color: #ffffff;
+                text-align: left;
+                padding: 8px 12px;
+            }
+            .content-table td {
+                padding: 8px 12px;
+                border: 1px solid #dddddd;
+            }
+            .content-table tr:nth-of-type(even) {
+                background-color: #f9f9f9;
+            }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        # Affichage HTML natif interprétable par la souris
+        st.components.v1.html(mail_html, height=850, scrolling=True)
         
     else:
         st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
