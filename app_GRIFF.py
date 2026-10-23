@@ -67,6 +67,7 @@ def load_all_data(uploaded_files):
             else:
                 df_temp = pd.read_csv(file, header=None)
                 
+            # Détection auto : Est-ce un export Artis ou Zeendoc ?
             is_artis = False
             for idx, row in df_temp.iloc[:5].iterrows():
                 row_str = " ".join(map(str, row.values))
@@ -116,7 +117,7 @@ def detect_filiale(df_art):
 filiale_detectee = detect_filiale(df_artis)
 
 # ------------------------------------------------------------------------------
-# 6. CALCULS ET VENTILATION PAR MOIS (EXCLUSION MOIS EN COURS INCOMPLET)
+# 6. CALCULS ET VENTILATION PAR MOIS (TAMPON FAF ARTIS + EXCLUSION MOIS EN COURS)
 # ------------------------------------------------------------------------------
 mois_fr = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
@@ -139,10 +140,8 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
     else:
         df_isi['Mois_Period'] = None
 
-    # On extrait uniquement les mois réellement présents dans l'export Isiwork
+    # On retient uniquement les mois réellement présents dans l'export Isiwork (clôturés)
     periods_isi = df_isi['Mois_Period'].dropna().unique().tolist() if 'Mois_Period' in df_isi else []
-    
-    # Filtrage : On ne garde que les mois validés Isiwork (exclut Octobre en cours)
     all_periods = sorted([p for p in periods_isi if p is not None])
 
     rows_ged = []
@@ -169,16 +168,23 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
         if tot_isi > 0 and 'Statut de rapprochement' in sub_isi.columns:
             auto_c = len(sub_isi[sub_isi['Statut de rapprochement'] == 'Rapproché automatiquement'])
             
-            faux_c = 0
-            if 'Tampons / Notes / Conversations' in sub_isi.columns:
-                notes = sub_isi['Tampons / Notes / Conversations'].fillna('')
-                faux_c = len(sub_isi[notes.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
+            notes = sub_isi['Tampons / Notes / Conversations'].fillna('') if 'Tampons / Notes / Conversations' in sub_isi.columns else pd.Series('', index=sub_isi.index)
             
+            # 1. Faux Manuel (Frais / Port / DEEE)
+            faux_c = len(sub_isi[notes.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
+            
+            # 2. Tampon FAF ARTIS (Saisie directe ERP marquée dans Isiwork)
+            faf_artis_c = len(sub_isi[notes.str.contains('FAF ARTIS|FAF_ARTIS', case=False, regex=True)])
+            
+            # 3. Vrai Manuel (Total manuels - Faux manuels - FAF Artis)
             man_tot = len(sub_isi[sub_isi['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)])
-            vrai_c = max(0, man_tot - faux_c)
+            vrai_c = max(0, man_tot - (faux_c + faf_artis_c))
             
-            ged_pure_c = max(0, tot_art - tot_isi) if tot_art > tot_isi else 0
-            attente_c = max(0, tot_isi - (auto_c + faux_c + vrai_c))
+            # 4. Flux GED pure / Saisie directe ERP globale
+            gap_volume = max(0, tot_art - tot_isi) if tot_art > tot_isi else 0
+            ged_pure_c = gap_volume + faf_artis_c
+            
+            attente_c = max(0, tot_isi - (auto_c + faux_c + vrai_c + faf_artis_c))
             
             pct_a = (auto_c / tot_isi) * 100
             pct_f = (faux_c / tot_isi) * 100
@@ -195,7 +201,7 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
             "Rapprochement Auto": f"{pct_a:.1f}% ({auto_c})",
             "Faux Manuel (Frais/Port)": f"{pct_f:.1f}% ({faux_c})",
             "Vrai Manuel (Écarts)": f"{pct_v:.1f}% ({vrai_c})",
-            "Flux GED pure (Saisie direct ERP)": f"{pct_gp:.1f}% ({ged_pure_c})",
+            "Flux GED pure (Saisie direct ERP / FAF)": f"{pct_gp:.1f}% ({ged_pure_c})",
             "En attente": f"{pct_att:.1f}% ({attente_c})"
         })
 
