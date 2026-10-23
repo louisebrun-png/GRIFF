@@ -117,7 +117,7 @@ def detect_filiale(df_art):
 filiale_detectee = detect_filiale(df_artis)
 
 # ------------------------------------------------------------------------------
-# 6. CALCULS ET VENTILATION PAR MOIS (TAMPON FAF ARTIS + EXCLUSION MOIS EN COURS)
+# 6. CALCULS ET VENTILATION PAR MOIS (CORRECTION PÉRIMÈTRE FLUX GED)
 # ------------------------------------------------------------------------------
 mois_fr = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
@@ -180,20 +180,23 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
             man_tot = len(sub_isi[sub_isi['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)])
             vrai_c = max(0, man_tot - (faux_c + faf_artis_c))
             
-            # 4. Flux GED pure / Saisie directe ERP globale
+            # 4. Saisies ERP hors GED
             gap_volume = max(0, tot_art - tot_isi) if tot_art > tot_isi else 0
-            ged_pure_c = gap_volume + faf_artis_c
+            saisie_erp_c = gap_volume + faf_artis_c
             
             attente_c = max(0, tot_isi - (auto_c + faux_c + vrai_c + faf_artis_c))
             
-            pct_a = (auto_c / tot_isi) * 100
-            pct_f = (faux_c / tot_isi) * 100
-            pct_v = (vrai_c / tot_isi) * 100
-            pct_gp = (ged_pure_c / tot_art * 100) if tot_art > 0 else 0.0
-            pct_att = (attente_c / tot_isi) * 100
+            # RECALCUL SANS LA SAISIE DIRECTE ERP / FAF :
+            # Le dénominateur est réduit au périmètre GED strict
+            tot_isi_filtre = max(1, tot_isi - faf_artis_c)
+            
+            pct_a = (auto_c / tot_isi_filtre) * 100
+            pct_f = (faux_c / tot_isi_filtre) * 100
+            pct_v = (vrai_c / tot_isi_filtre) * 100
+            pct_att = (attente_c / tot_isi_filtre) * 100
         else:
-            auto_c, faux_c, vrai_c, ged_pure_c, attente_c = 0, 0, 0, 0, 0
-            pct_a, pct_f, pct_v, pct_gp, pct_att = 0.0, 0.0, 0.0, 0.0, 0.0
+            auto_c, faux_c, vrai_c, saisie_erp_c, attente_c = 0, 0, 0, 0, 0
+            pct_a, pct_f, pct_v, pct_att = 0.0, 0.0, 0.0, 0.0
 
         rows_ged.append({
             "Mois Comptable": label_mois,
@@ -201,7 +204,7 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
             "Rapprochement Auto": f"{pct_a:.1f}% ({auto_c})",
             "Faux Manuel (Frais/Port)": f"{pct_f:.1f}% ({faux_c})",
             "Vrai Manuel (Écarts)": f"{pct_v:.1f}% ({vrai_c})",
-            "Flux GED pure: f"{pct_gp:.1f}% ({ged_pure_c})",
+            "Flux GED": f"{saisie_erp_c} vol.",
             "En attente": f"{pct_att:.1f}% ({attente_c})"
         })
 
@@ -216,7 +219,7 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
 
 df_ged_monthly, df_erp_monthly, valid_periods = compute_monthly_breakdown(df_artis, df_isiwork)
 
-# Filtrage global des compteurs KPI pour ne compter que les mois retenus
+# Filtrage global des compteurs KPI
 if valid_periods and not df_artis.empty and 'Date' in df_artis.columns:
     df_artis_filtered = df_artis[pd.to_datetime(df_artis['Date'], errors='coerce').dt.to_period('M').isin(valid_periods)]
 else:
@@ -282,7 +285,7 @@ with tab1:
 
 Vous trouverez ci-dessous l'analyse détaillée des performances du flux de rapprochement automatique des factures fournisseurs pour {filiale_detectee}, consolidée sur la période de {periode_globale}.
 
-Afin de maintenir une analyse d'une grande rigueur opérationnelle, nous appliquons la méthodologie de lecture fine des tampons et des lignes de commentaires Isiwork. Cela nous permet de dissocier les rapprochements purement bloquants sur les produits des "Faux Manuels" (factures validées humainement à cause de frais annexes ou de port non saisis sur le BC initial) afin d'identifier les leviers précis de performance.
+Afin de maintenir une analyse d'une grande rigueur opérationnelle, nous appliquons la méthodologie de lecture fine des tampons et des lignes de commentaires Isiwork. Les saisies directes ERP (FAF) sont exclues du calcul de pourcentage afin de mesurer le véritable taux de rapprochement automatique sur le périmètre GED utile.
 
 1. Vision GED
 Typologie des flux dans Isiwork
@@ -290,11 +293,11 @@ Typologie des flux dans Isiwork
 {table_ged_md}
 
 Légende des états:
-• Rapprochement Auto: Factures rapprochées à 100% automatiquement sans aucune intervention.
-• Faux Manuel: Marchandises 100% conformes, mais forçage manuel pour l'ajout de frais annexes (port, DEEE).
-• Vrai Manuel: Blocage humain obligatoire suite à des écarts de prix ou de quantités sur les produits.
-• Flux GED pure: Pièces saisies directement sur l'ERP sans passer par le circuit de rapprochement GED.
-• En attente: Pièces en cours de validation (effet clôture mensuelle).
+- Rapprochement Auto: Factures rapprochées à 100% automatiquement sans aucune intervention (recalculé hors FAF).
+- Faux Manuel: Marchandises 100% conformes, mais forçage manuel pour l'ajout de frais annexes (port, DEEE).
+- Vrai Manuel: Blocage humain obligatoire suite à des écarts de prix ou de quantités sur les produits.
+- Flux GED: Volume de pièces saisies directement sur l'ERP (hors calcul %).
+- En attente: Pièces en cours de validation (effet clôture mensuelle).
 
 
 2. Vision ERP — Intégration et traitement réel dans Artis
@@ -304,14 +307,14 @@ Légende des états:
 
 3. Focus Actions / Analyse des rapprochements "Vrais Manuels"
 Sur la part des traitements bloqués pour de vrais écarts de prix ou de quantités sur les lignes de produits (hors lignes de frais), les anomalies se concentrent principalement sur les fournisseurs clés :
-• TD SYNNEX
-• ACTUAL SYSTEMES
-• CANON FRANCE
+- TD SYNNEX
+- ACTUAL SYSTEMES
+- CANON FRANCE
 
 
 4. Suivi des chantiers techniques et conclusion
-• Stabilité opérationnelle de l'ERP: L'injection finale en comptabilité confirme la performance du batch automatique sans intervention utilisateur.
-• Levier "Frais Annexes": L'application locale de l'article d'écart dédié aux frais de port (ZINF-FRAIS_DE_PORT) permettra de convertir automatiquement les Faux Manuels en succès machine.
+- Stabilité opérationnelle de l'ERP: L'injection finale en comptabilité confirme la performance du batch automatique sans intervention utilisateur.
+- Levier "Frais Annexes": L'application locale de l'article d'écart dédié aux frais de port (ZINF-FRAIS_DE_PORT) permettra de convertir automatiquement les Faux Manuels en succès machine.
 
 Nous restons à votre entière disposition pour échanger sur ce bilan.
 
