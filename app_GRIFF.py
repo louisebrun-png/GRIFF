@@ -130,7 +130,6 @@ def load_all_data(uploaded_files):
             is_isiwork = False
             header_row = 0
             
-            # Détection Isiwork via 'Statut de rapprochement' ou 'Identifiant'
             for idx, row in df_temp.iloc[:10].iterrows():
                 row_str = " ".join([str(v) for v in row.values if pd.notna(v)])
                 if 'Statut de rapprochement' in row_str or 'Identifiant' in row_str:
@@ -174,7 +173,7 @@ def detect_filiale(df_art):
 filiale_detectee = detect_filiale(df_artis)
 
 # ------------------------------------------------------------------------------
-# 7. CALCULS ET VENTILATION PAR MOIS (RÈGLE EXACTE DE DÉDUCTION GED PURE)
+# 7. CALCULS ET VENTILATION PAR MOIS (RÈGLE STRICTE ÉPURÉE)
 # ------------------------------------------------------------------------------
 mois_fr = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
@@ -222,10 +221,8 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
         # ISIWORK (GED)
         tot_isi_brut = len(sub_isi)
         if tot_isi_brut > 0 and 'Statut de rapprochement' in sub_isi.columns:
-            # 1. Rapproché automatiquement (STRICTEMENT INTACT ET IN TOUCHÉ)
             auto_c = len(sub_isi[sub_isi['Statut de rapprochement'] == 'Rapproché automatiquement'])
             
-            # 2. Rapprochements non automatiques (non-auto)
             not_auto_mask = sub_isi['Statut de rapprochement'] != 'Rapproché automatiquement'
             
             notes_all = sub_isi['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in sub_isi.columns else pd.Series('', index=sub_isi.index)
@@ -235,23 +232,17 @@ def compute_monthly_breakdown(df_art_in, df_isi_in):
             
             is_faf = notes_all.str.contains(pattern_ged_pure, case=False, regex=True) | export_erp.str.contains(pattern_ged_pure, case=False, regex=True) | sub_isi['Statut de rapprochement'].isna()
             
-            # GED Pure = Uniquement les lignes non-auto portantes les tampons/textes FAF/Archivage/Traité dans Artis
             ged_pure_mask = not_auto_mask & is_faf
             ged_pure_c = ged_pure_mask.sum()
             
-            # Volume Épuré GED = Vol Brut GED - GED Pure
             vol_epure = max(0, tot_isi_brut - ged_pure_c)
             
-            # Sous-ensemble épuré soumis au rapprochement réels
             sub_isi_epure = sub_isi[~ged_pure_mask].copy()
-            
-            # Faux Manuel (Frais / Port / DEEE)
-            notes_epure = sub_isi_epure['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in sub_isi_epure.columns else pd.Series('', index=sub_isi_epure.index)
             
             df_man_epure = sub_isi_epure[sub_isi_epure['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)].copy()
             notes_man_epure = df_man_epure['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in df_man_epure.columns else pd.Series('', index=df_man_epure.index)
             
-            faux_c = len(df_man_epure[notes_man_epure.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)])
+            faux_c = len(df_man_epure[notes_man_epure.str.contains('FRAIS|PORT|D3EE|DEEE', case=False, regex=True)])
             vrai_c = max(0, len(df_man_epure) - faux_c)
             
             attente_c = max(0, vol_epure - (auto_c + faux_c + vrai_c))
@@ -308,20 +299,31 @@ else:
     periode_globale = "Mois non détecté"
 
 # ------------------------------------------------------------------------------
-# 8. EXTRACTION DYNAMIQUE TOPS FOURNISSEURS
+# 8. EXTRACTION DYNAMIQUE TOPS FOURNISSEURS SUR PÉRIMÈTRE ÉPURÉ STRICT
 # ------------------------------------------------------------------------------
 txt_top_vrai_html = ""
 txt_top_faux_html = ""
 
 if not df_isiwork_filtered.empty and 'Statut de rapprochement' in df_isiwork_filtered.columns:
-    df_man = df_isiwork_filtered[df_isiwork_filtered['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)].copy()
-    notes_man = df_man['Tampons / Notes / Conversations'].fillna('') if 'Tampons / Notes / Conversations' in df_man.columns else pd.Series('', index=df_man.index)
+    sub_isi_f = df_isiwork_filtered.copy()
     
-    mask_faux = notes_man.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)
-    mask_faf = notes_man.str.contains('FAF ARTIS|FAF_ARTIS|TRAIT|ARCHIV', case=False, regex=True)
+    notes_all = sub_isi_f['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in sub_isi_f.columns else pd.Series('', index=sub_isi_f.index)
+    export_erp = sub_isi_f['Date export ERP'].fillna('').astype(str) if 'Date export ERP' in sub_isi_f.columns else pd.Series('', index=sub_isi_f.index)
+    pattern_ged_pure = 'FAF|TRAIT|ARTIS|ARCHIV|DÉJÀ TRAITÉ'
     
-    df_vrai_fourn = df_man[~mask_faux & ~mask_faf]
-    df_faux_fourn = df_man[mask_faux]
+    not_auto_mask = sub_isi_f['Statut de rapprochement'] != 'Rapproché automatiquement'
+    is_faf = notes_all.str.contains(pattern_ged_pure, case=False, regex=True) | export_erp.str.contains(pattern_ged_pure, case=False, regex=True) | sub_isi_f['Statut de rapprochement'].isna()
+    ged_pure_mask = not_auto_mask & is_faf
+    
+    sub_isi_epure = sub_isi_f[~ged_pure_mask].copy()
+    
+    df_man_epure = sub_isi_epure[sub_isi_epure['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)].copy()
+    notes_man_epure = df_man_epure['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in df_man_epure.columns else pd.Series('', index=df_man_epure.index)
+    
+    mask_faux = notes_man_epure.str.contains('FRAIS|PORT|D3EE|DEEE', case=False, regex=True)
+    
+    df_vrai_fourn = df_man_epure[~mask_faux]
+    df_faux_fourn = df_man_epure[mask_faux]
     
     if not df_vrai_fourn.empty and 'Fournisseur' in df_vrai_fourn.columns:
         s_vrai = df_vrai_fourn['Fournisseur'].value_counts().head(5)
@@ -335,7 +337,7 @@ if not txt_top_vrai_html:
     txt_top_vrai_html = "<li><b>TD SYNNEX</b></li><li><b>ACTUAL SYSTEMES</b></li><li><b>CANON FRANCE</b></li>"
 
 if not txt_top_faux_html:
-    txt_top_faux_html = "<li><b>ACTUAL SYSTEMES</b></li><li><b>CANON FRANCE</b></li><li><b>EPARTS</b></li>"
+    txt_top_faux_html = "<li>Aucun Faux Manuel détecté</li>"
 
 # ------------------------------------------------------------------------------
 # 9. ONGLETS DE NAVIGATION
@@ -504,7 +506,7 @@ with tab2:
             df_man_f_epure = sub_isi_f_epure[sub_isi_f_epure['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)].copy() if 'Statut de rapprochement' in sub_isi_f_epure.columns else pd.DataFrame()
             notes_f_epure = df_man_f_epure['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in df_man_f_epure.columns else pd.Series('', index=df_man_f_epure.index)
             
-            faux_c = len(df_man_f_epure[notes_f_epure.str.contains('FRAIS|PORT|D3EE', case=False, regex=True)]) if not df_man_f_epure.empty else 0
+            faux_c = len(df_man_f_epure[notes_f_epure.str.contains('FRAIS|PORT|D3EE|DEEE', case=False, regex=True)]) if not df_man_f_epure.empty else 0
             vrai_c = max(0, len(df_man_f_epure) - faux_c)
             
             att_c = max(0, vol_epure - (auto_c + faux_c + vrai_c))
