@@ -235,7 +235,7 @@ else:
     periode_globale = "Mois non détecté"
 
 # ------------------------------------------------------------------------------
-# 7. EXTRACTION DYNAMIQUE DES TOPS FOURNISSEURS (VRAI MANUEL & FAUX MANUEL)
+# 7. EXTRACTION DYNAMIQUE DES TOPS FOURNISSEURS (FORMAT CONCIS & ÉPURÉ)
 # ------------------------------------------------------------------------------
 txt_top_vrai = ""
 txt_top_faux = ""
@@ -250,15 +250,14 @@ if not df_isiwork_filtered.empty and 'Statut de rapprochement' in df_isiwork_fil
     df_vrai_fourn = df_man[~mask_faux & ~mask_faf]
     df_faux_fourn = df_man[mask_faux]
     
-    # Génération liste Top 5 Vrai Manuel
+    # Format concis : juste le nom et le nombre de factures
     if not df_vrai_fourn.empty and 'Fournisseur' in df_vrai_fourn.columns:
         s_vrai = df_vrai_fourn['Fournisseur'].value_counts().head(5)
-        txt_top_vrai = "\n".join([f"• {fourn} : {cnt} facture(s) en écart (prix / réf / quantité)" for fourn, cnt in s_vrai.items()])
+        txt_top_vrai = "\n".join([f"• {fourn} : {cnt} facture(s)" for fourn, cnt in s_vrai.items()])
     
-    # Génération liste Top Faux Manuel
     if not df_faux_fourn.empty and 'Fournisseur' in df_faux_fourn.columns:
         s_faux = df_faux_fourn['Fournisseur'].value_counts().head(5)
-        txt_top_faux = "\n".join([f"• {fourn} : {cnt} facture(s) ajustée(s) (frais de port / éco-participation DEEE)" for fourn, cnt in s_faux.items()])
+        txt_top_faux = "\n".join([f"• {fourn} : {cnt} facture(s)" for fourn, cnt in s_faux.items()])
 
 if not txt_top_vrai:
     txt_top_vrai = "• TD SYNNEX\n• ACTUAL SYSTEMES\n• CANON FRANCE"
