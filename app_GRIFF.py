@@ -59,9 +59,18 @@ files_artis = st.sidebar.file_uploader(
 @st.cache_data
 def load_zeendoc_data(uploaded_files):
     df_list = []
+    filiale_from_isiwork = None
+    
     for file in uploaded_files:
         try:
             df_temp = pd.read_excel(file, header=None) if file.name.endswith('.xlsx') else pd.read_csv(file, header=None)
+            
+            # Détection du nom de la filiale en cellule A1 ou dans les premières lignes
+            if not df_temp.empty and pd.notna(df_temp.iloc[0, 0]):
+                val_a1 = str(df_temp.iloc[0, 0]).strip()
+                if "KOESIO" in val_a1.upper():
+                    filiale_from_isiwork = val_a1
+            
             header_row = 0
             for idx, row in df_temp.iterrows():
                 if 'Statut de rapprochement' in row.values or 'Identifiant' in row.values:
@@ -78,8 +87,9 @@ def load_zeendoc_data(uploaded_files):
             st.error(f"Erreur lors de la lecture de {file.name}: {e}")
             
     if df_list:
-        return pd.concat(df_list, ignore_index=True)
-    return pd.DataFrame()
+        df_concat = pd.concat(df_list, ignore_index=True)
+        return df_concat, filiale_from_isiwork
+    return pd.DataFrame(), None
 
 @st.cache_data
 def load_artis_data(uploaded_files):
@@ -98,20 +108,24 @@ def load_artis_data(uploaded_files):
         return pd.concat(df_list, ignore_index=True)
     return pd.DataFrame()
 
-df_isiwork = load_zeendoc_data(files_isiwork) if files_isiwork else pd.DataFrame()
+df_isiwork, filiale_isiwork = load_zeendoc_data(files_isiwork) if files_isiwork else (pd.DataFrame(), None)
 df_artis = load_artis_data(files_artis) if files_artis else pd.DataFrame()
 
 # ------------------------------------------------------------------------------
-# 5. DÉTECTION AUTOMATIQUE DE LA FILIALE
+# 5. DÉTECTION DYNAMIQUE DE LA FILIALE DEPUIS LES FICHIERS
 # ------------------------------------------------------------------------------
-def detect_filiale(df_art):
+def detect_filiale(df_art, filiale_isi):
     if not df_art.empty and 'Organisation interne' in df_art.columns:
         filiales = df_art['Organisation interne'].dropna().unique().tolist()
         if filiales:
             return ", ".join(map(str, filiales))
-    return "KOESIO ILE DE FRANCE"
+            
+    if filiale_isi:
+        return filiale_isi
+        
+    return "En attente de fichier..."
 
-filiale_detectee = detect_filiale(df_artis)
+filiale_detectee = detect_filiale(df_artis, filiale_isiwork)
 
 # ------------------------------------------------------------------------------
 # 6. FONCTIONS DE CALCUL VENTILÉ PAR MOIS COMPTABLE
