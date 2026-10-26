@@ -139,7 +139,7 @@ def parse_pdf_history_full(pdf_file):
 dict_hist_m1, list_chantiers_m1 = parse_pdf_history_full(file_history_input)
 
 # ------------------------------------------------------------------------------
-# 6. CHARGEMENT ET DÉTECTION ROBUSTE DES FICHIERS
+# 6. CHARGEMENT ET DÉTECTION ROBUSTE DES FICHIERS PAR SIGNATURE ZEENDOC
 # ------------------------------------------------------------------------------
 @st.cache_data(show_spinner="Analyse rapide des fichiers Excel...")
 def load_all_data(uploaded_files):
@@ -208,24 +208,54 @@ def detect_filiale(df_art):
 filiale_detectee = detect_filiale(df_artis)
 
 # ------------------------------------------------------------------------------
-# 8. PÉRIODES COMPTABLES DISPONIBLES
+# 8. FILTRAGE STRICT DES MOIS CLÔTURÉS (EXCLUSION DU MOIS EN COURS)
 # ------------------------------------------------------------------------------
 mois_fr = {
     1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
     7: "Juillet", 8: "Août", 9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre"
 }
 
-def get_all_periods(df_art, df_isi):
+def get_closed_periods(df_art, df_isi):
     p_art, p_isi = [], []
     if not df_art.empty and 'Date' in df_art.columns:
         p_art = pd.to_datetime(df_art['Date'], errors='coerce').dt.to_period('M').dropna().unique().tolist()
     if not df_isi.empty and 'Date facture' in df_isi.columns:
         p_isi = pd.to_datetime(df_isi['Date facture'], errors='coerce').dt.to_period('M').dropna().unique().tolist()
-    return sorted(list(set(p_art + p_isi)))
+    
+    all_periods = sorted(list(set(p_art + p_isi)))
+    
+    current_ongoing_period = pd.Period(pd.Timestamp.now(), freq='M')
+    closed_periods = [p for p in all_periods if p < current_ongoing_period]
+    
+    return closed_periods if closed_periods else all_periods
 
-all_periods_p = get_all_periods(df_artis, df_isiwork)
+all_periods_p = get_closed_periods(df_artis, df_isiwork)
 
-# Fonctions d'analyse par période
+if all_periods_p:
+    if len(all_periods_p) == 1:
+        periode_globale = f"{mois_fr.get(all_periods_p[0].month, str(all_periods_p[0].month))} {all_periods_p[0].year}"
+    else:
+        m_start = f"{mois_fr.get(all_periods_p[0].month, str(all_periods_p[0].month))} {all_periods_p[0].year}"
+        m_end = f"{mois_fr.get(all_periods_p[-1].month, str(all_periods_p[-1].month))} {all_periods_p[-1].year}"
+        periode_globale = f"{m_start} et {m_end}"
+else:
+    periode_globale = "Mois non détecté"
+
+if all_periods_p:
+    if not df_artis.empty and 'Date' in df_artis.columns:
+        df_artis_filtered = df_artis[pd.to_datetime(df_artis['Date'], errors='coerce').dt.to_period('M').isin(all_periods_p)]
+    else:
+        df_artis_filtered = df_artis
+        
+    if not df_isiwork.empty and 'Date facture' in df_isiwork.columns:
+        df_isiwork_filtered = df_isiwork[pd.to_datetime(df_isiwork['Date facture'], errors='coerce').dt.to_period('M').isin(all_periods_p)]
+    else:
+        df_isiwork_filtered = df_isiwork
+else:
+    df_artis_filtered = df_artis
+    df_isiwork_filtered = df_isiwork
+
+# Fonction d'analyse consolidée par période
 def compute_consolidation_for_period(p_period, compare_dict=None, compare_label="M-1"):
     if not df_artis.empty and 'Date' in df_artis.columns:
         df_art_p = df_artis[pd.to_datetime(df_artis['Date'], errors='coerce').dt.to_period('M') == p_period]
@@ -258,7 +288,6 @@ def compute_consolidation_for_period(p_period, compare_dict=None, compare_label=
     tot_vol_brut, tot_ged_pure, tot_vol_epure, tot_auto, tot_faux, tot_vrai, tot_att = 0, 0, 0, 0, 0, 0, 0
     tot_art_all, tot_batch_all, tot_man_all = 0, 0, 0
     
-    # Dictionnaire de sortie du % auto pour comparaison du mois suivant
     dict_pct_auto_out = {}
 
     for f in filiales_g:
@@ -434,6 +463,44 @@ def compute_consolidation_for_period(p_period, compare_dict=None, compare_label=
     return df_ged_groupe, df_erp_groupe, dict_pct_auto_out
 
 # ------------------------------------------------------------------------------
+# 9. EXTRACTION DYNAMIQUE TOPS FOURNISSEURS
+# ------------------------------------------------------------------------------
+txt_top_vrai_html = ""
+txt_top_faux_html = ""
+
+if not df_isiwork_filtered.empty and 'Statut de rapprochement' in df_isiwork_filtered.columns:
+    sub_isi_f = df_isiwork_filtered.copy()
+    notes_all = sub_isi_f['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in sub_isi_f.columns else pd.Series('', index=sub_isi_f.index)
+    export_erp = sub_isi_f['Date export ERP'].fillna('').astype(str) if 'Date export ERP' in sub_isi_f.columns else pd.Series('', index=sub_isi_f.index)
+    pattern_ged_pure = 'FAF|TRAIT|ARTIS|ARCHIV|DÉJÀ TRAITÉ'
+    
+    not_auto_mask = sub_isi_f['Statut de rapprochement'] != 'Rapproché automatiquement'
+    is_faf = notes_all.str.contains(pattern_ged_pure, case=False, regex=True) | export_erp.str.contains(pattern_ged_pure, case=False, regex=True) | sub_isi_f['Statut de rapprochement'].isna()
+    ged_pure_mask = not_auto_mask & is_faf
+    
+    sub_isi_epure = sub_isi_f[~ged_pure_mask].copy()
+    df_man_epure = sub_isi_epure[sub_isi_epure['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)].copy()
+    notes_man_epure = df_man_epure['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in df_man_epure.columns else pd.Series('', index=df_man_epure.index)
+    mask_faux = notes_man_epure.str.contains('FRAIS|PORT|D3EE|DEEE', case=False, regex=True)
+    
+    df_vrai_fourn = df_man_epure[~mask_faux]
+    df_faux_fourn = df_man_epure[mask_faux]
+    
+    if not df_vrai_fourn.empty and 'Fournisseur' in df_vrai_fourn.columns:
+        s_vrai = df_vrai_fourn['Fournisseur'].value_counts().head(5)
+        txt_top_vrai_html = "".join([f"<li><b>{fourn}</b> : {cnt} factures</li>" for fourn, cnt in s_vrai.items()])
+    
+    if not df_faux_fourn.empty and 'Fournisseur' in df_faux_fourn.columns:
+        s_faux = df_faux_fourn['Fournisseur'].value_counts().head(5)
+        txt_top_faux_html = "".join([f"<li><b>{fourn}</b> : {cnt} factures</li>" for fourn, cnt in s_faux.items()])
+
+if not txt_top_vrai_html:
+    txt_top_vrai_html = "<li><b>TD SYNNEX</b></li><li><b>ACTUAL SYSTEMES</b></li><li><b>CANON FRANCE</b></li>"
+
+if not txt_top_faux_html:
+    txt_top_faux_html = "<li>Aucun Faux Manuel détecté</li>"
+
+# ------------------------------------------------------------------------------
 # 10. ONGLETS DE NAVIGATION
 # ------------------------------------------------------------------------------
 tab1, tab2 = st.tabs(["🏢 Vision Filiale (Rapport & Mail)", "🌍 Consolidation Groupe"])
@@ -445,13 +512,13 @@ with tab1:
     st.subheader(f"📊 Bilan de Production — {filiale_detectee}")
     
     if not df_isiwork.empty or not df_artis.empty:
-        st.success(f"📅 Périodes détectées dans les exports : **{', '.join([f'{mois_fr.get(p.month, str(p.month))} {p.year}' for p in all_periods_p])}**")
+        st.success(f"📅 Mois clôturés analysés : **{', '.join([f'{mois_fr.get(p.month, str(p.month))} {p.year}' for p in all_periods_p])}**")
         
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.metric("Total Factures Artis", f"{len(df_artis):,}".replace(',', ' '))
+            st.metric("Total Factures Artis", f"{len(df_artis_filtered):,}".replace(',', ' '))
         with c2:
-            st.metric("Total Factures Isiwork", f"{len(df_isiwork):,}".replace(',', ' '))
+            st.metric("Total Factures Isiwork", f"{len(df_isiwork_filtered):,}".replace(',', ' '))
         with c3:
             st.metric("Filiale Détectée", filiale_detectee)
             
@@ -469,7 +536,7 @@ with tab1:
             st.markdown("---")
             
     else:
-        st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
+        st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans the panneau latéral.")
 
 # ==============================================================================
 # ONGLET 2 : CONSOLIDATION GROUPE (AOÛT COMPARAISON M-1 & SEPTEMBRE COMPARAISON AOÛT)
@@ -480,6 +547,8 @@ with tab2:
     if all_periods_p:
         dict_prev_month = dict_hist_m1
         label_prev_month = "M-1 (Juillet)"
+        
+        html_mail_sections = ""
         
         for p in all_periods_p:
             lbl_m = f"{mois_fr.get(p.month, str(p.month))} {p.year}"
@@ -496,40 +565,44 @@ with tab2:
             
             st.markdown("---")
             
-            # Préparation du mois suivant
+            # Construction HTML pour le mail incorporant TOUS les mois clôturés
+            tbl_ged_html = df_g_p.to_html(index=False, border=1, classes='content-table')
+            tbl_erp_html = df_e_p.to_html(index=False, border=1, classes='content-table')
+            
+            html_mail_sections += f"""
+            <h3 style="color: #0056b3; margin-top: 25px;">📈 1. VISION GED / ISIWORK — {lbl_m}</h3>
+            {tbl_ged_html}
+            
+            <h3 style="color: #0056b3; margin-top: 25px;">💻 2. VISION ERP ARTIS — {lbl_m}</h3>
+            {tbl_erp_html}
+            """
+            
+            # Chaînage : le mois actuel devient la référence pour le mois suivant
             dict_prev_month = dict_auto_p
             label_prev_month = lbl_m
             
-        st.markdown("### ✉️ Modèle de Mail National Consolidé (Prêt à copier)")
+        st.markdown("### ✉️ Modèle de Mail National Consolidé Multi-Mois (Prêt à copier)")
         
         txt_chantiers_html = "".join([f"<li>{c}</li>" for c in list_chantiers_m1])
-        
-        # HTML Mail Consolidé
-        p_last = all_periods_p[-1]
-        lbl_last = f"{mois_fr.get(p_last.month, str(p_last.month))} {p_last.year}"
-        df_g_last, df_e_last, _ = compute_consolidation_for_period(p_last, compare_dict=dict_hist_m1, compare_label="M-1")
-        
-        table_ged_groupe_html = df_g_last.to_html(index=False, border=1, classes='content-table')
-        table_erp_groupe_html = df_e_last.to_html(index=False, border=1, classes='content-table')
         
         mail_groupe_html = f"""
         <div style="font-family: Arial, sans-serif; font-size: 14px; color: #222; line-height: 1.5; padding: 10px; background-color: #ffffff; border-radius: 5px;">
             <p>Bonjour à tous,</p>
             
-            <p>Dans le cadre du suivi technique et opérationnel de notre projet de transition de la saisie manuelle vers le pilotage financier automatique, vous trouverez ci-dessous le rapport national récapitulatif consolidé pour l'ensemble de nos filiales actives du Groupe Koesio pour la période de <b>{lbl_last}</b>.</p>
+            <p>Dans le cadre du suivi technique et opérationnel de notre projet de transition de la saisie manuelle vers le pilotage financier automatique, vous trouverez ci-dessous le rapport national récapitulatif consolidé pour l'ensemble de nos filiales actives du Groupe Koesio pour la période de <b>{periode_globale}</b>.</p>
             
             <p>Conformément à nos spécifications de pilotage Groupe validées en comité, ce rapport isole de manière stricte les flux qualifiés de <b>« GED Pure / FAF Artis »</b> afin de ne pas fausser l'efficacité machine réelle de rapprochement de notre plateforme Isiwork.</p>
             
-            <h3 style="color: #0056b3; margin-top: 20px;">📈 1. VISION GED / ISIWORK — Rapprochement National & Évolutions</h3>
-            {table_ged_groupe_html}
+            {html_mail_sections}
             
-            <h3 style="color: #0056b3; margin-top: 20px;">💻 2. VISION ERP ARTIS — Journal d'Intégration National</h3>
-            {table_erp_groupe_html}
+            <p style="font-size: 12px; color: #555; margin-top: 10px;">
+                <i>* Note : Certaines factures d'achat (abonnements, sous-traitance) peuvent se retrouver en saisie directe dans ARTIS, mais le flux doit être majoritairement issu d'Isiwork. Si ce n'est pas le cas, une analyse des pièces saisies en direct s'impose (ex. cas connu chez EOLE : TVA à 0%).</i>
+            </p>
             
             <h3 style="color: #0056b3; margin-top: 20px;">🔍 3. FOCUS ACTIONS — Enseignements Clés du Groupe</h3>
             <p><b>• Alerte Référentiels Prix :</b> L'analyse des blocages « Vrais Manuels » montre que la charge de traitement réside principalement sur un problème de mise à jour tarifaire en amont sur nos partenaires stratégiques (TD SYNNEX, ACTUAL SYSTEMES, CANON FRANCE, SHARP).</p>
             
-            <h3 style="color: #0056b3; margin-top: 20px;">⚙️ 4. SUIVI DES CHANTIERS TECHNIQUES & PERSPECTIVES</h3>
+            <h3 style="color: #0056b3; margin-top: 20px;">⚙️ 4. SUIVI DES CHANTIERS TECHNIQUES & PERSPECTIVES (Rappel M-1 & Avancées)</h3>
             <ul>
                 {txt_chantiers_html}
             </ul>
@@ -541,7 +614,7 @@ with tab2:
         </div>
         """
         
-        st.components.v1.html(mail_groupe_html, height=850, scrolling=True)
+        st.components.v1.html(mail_groupe_html, height=1200, scrolling=True)
         
     else:
         st.warning("👈 Téléversez les fichiers de vos différentes filiales dans la barre latérale pour afficher la consolidation groupe.")
