@@ -524,22 +524,47 @@ with tab1:
             
         st.markdown("---")
         
-        for p in all_periods_p:
-            lbl_m = f"{mois_fr.get(p.month, str(p.month))} {p.year}"
-            df_g_m, df_e_m, _ = compute_consolidation_for_period(p)
+        # Affichage côte à côte si 2 mois
+        if len(all_periods_p) == 2:
+            p_a, p_b = all_periods_p[0], all_periods_p[1]
+            lbl_a = f"{mois_fr.get(p_a.month, str(p_a.month))} {p_a.year}"
+            lbl_b = f"{mois_fr.get(p_b.month, str(p_b.month))} {p_b.year}"
             
-            st.markdown(f"### 📈 1. VISION GED / ISIWORK — {lbl_m}")
-            st.dataframe(df_g_m, hide_index=True, use_container_width=True)
+            df_g_a, df_e_a, _ = compute_consolidation_for_period(p_a)
+            df_g_b, df_e_b, _ = compute_consolidation_for_period(p_b)
             
-            st.markdown(f"### 💻 2. VISION ERP ARTIS — {lbl_m}")
-            st.dataframe(df_e_m, hide_index=True, use_container_width=True)
-            st.markdown("---")
+            st.markdown("### 📈 1. VISION GED / ISIWORK (Comparatif Côte à Côte)")
+            col_g1, col_g2 = st.columns(2)
+            with col_g1:
+                st.caption(f"**{lbl_a}**")
+                st.dataframe(df_g_a, hide_index=True, use_container_width=True)
+            with col_g2:
+                st.caption(f"**{lbl_b}**")
+                st.dataframe(df_g_b, hide_index=True, use_container_width=True)
+                
+            st.markdown("### 💻 2. VISION ERP ARTIS (Comparatif Côte à Côte)")
+            col_e1, col_e2 = st.columns(2)
+            with col_e1:
+                st.caption(f"**{lbl_a}**")
+                st.dataframe(df_e_a, hide_index=True, use_container_width=True)
+            with col_e2:
+                st.caption(f"**{lbl_b}**")
+                st.dataframe(df_e_b, hide_index=True, use_container_width=True)
+        else:
+            for p in all_periods_p:
+                lbl_m = f"{mois_fr.get(p.month, str(p.month))} {p.year}"
+                df_g_m, df_e_m, _ = compute_consolidation_for_period(p)
+                st.markdown(f"### 📈 1. VISION GED / ISIWORK — {lbl_m}")
+                st.dataframe(df_g_m, hide_index=True, use_container_width=True)
+                st.markdown(f"### 💻 2. VISION ERP ARTIS — {lbl_m}")
+                st.dataframe(df_e_m, hide_index=True, use_container_width=True)
+                st.markdown("---")
             
     else:
-        st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans the panneau latéral.")
+        st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
 
 # ==============================================================================
-# ONGLET 2 : CONSOLIDATION GROUPE (AOÛT COMPARAISON M-1 & SEPTEMBRE COMPARAISON AOÛT)
+# ONGLET 2 : CONSOLIDATION GROUPE (AOÛT ET SEPTEMBRE CÔTE À CÔTE)
 # ==============================================================================
 with tab2:
     st.subheader("🌍 Consolidation Inter-Filiales — Groupe Koesio")
@@ -548,54 +573,117 @@ with tab2:
         dict_prev_month = dict_hist_m1
         label_prev_month = "M-1 (Juillet)"
         
-        html_mail_sections = ""
+        computed_months = []
         
         for p in all_periods_p:
             lbl_m = f"{mois_fr.get(p.month, str(p.month))} {p.year}"
-            
-            st.markdown(f"## 📅 Bilan Consolidé — {lbl_m}")
             df_g_p, df_e_p, dict_auto_p = compute_consolidation_for_period(p, compare_dict=dict_prev_month, compare_label=label_prev_month)
             
-            st.markdown(f"### 📈 1. VISION GED / ISIWORK — {lbl_m}")
-            st.dataframe(df_g_p, hide_index=True, use_container_width=True)
+            computed_months.append({
+                "label": lbl_m,
+                "df_ged": df_g_p,
+                "df_erp": df_e_p
+            })
             
-            st.markdown(f"### 💻 2. VISION ERP ARTIS — {lbl_m}")
-            st.dataframe(df_e_p, hide_index=True, use_container_width=True)
-            st.caption("ℹ️ **Note sur l'intégration ERP** : Certaines factures d'achat (abonnements, sous-traitance) peuvent se retrouver en saisie directe dans ARTIS, mais l'essentiel du flux doit transiter par Isiwork (ex. cas connu chez EOLE : TVA à 0%).")
-            
-            st.markdown("---")
-            
-            # Construction HTML pour le mail incorporant TOUS les mois clôturés
-            tbl_ged_html = df_g_p.to_html(index=False, border=1, classes='content-table')
-            tbl_erp_html = df_e_p.to_html(index=False, border=1, classes='content-table')
-            
-            html_mail_sections += f"""
-            <h3 style="color: #0056b3; margin-top: 25px;">📈 1. VISION GED / ISIWORK — {lbl_m}</h3>
-            {tbl_ged_html}
-            
-            <h3 style="color: #0056b3; margin-top: 25px;">💻 2. VISION ERP ARTIS — {lbl_m}</h3>
-            {tbl_erp_html}
-            """
-            
-            # Chaînage : le mois actuel devient la référence pour le mois suivant
+            # Chaînage pour le mois suivant
             dict_prev_month = dict_auto_p
             label_prev_month = lbl_m
             
-        st.markdown("### ✉️ Modèle de Mail National Consolidé Multi-Mois (Prêt à copier)")
+        # AFFICHAGE CÔTE À CÔTE SI 2 MOIS (AOÛT ET SEPTEMBRE)
+        if len(computed_months) == 2:
+            m1, m2 = computed_months[0], computed_months[1]
+            
+            st.markdown("### 📈 1. VISION GED / ISIWORK — Rapprochement National Consolidé")
+            c_ged1, c_ged2 = st.columns(2)
+            with c_ged1:
+                st.markdown(f"#### 📅 {m1['label']}")
+                st.dataframe(m1['df_ged'], hide_index=True, use_container_width=True)
+            with c_ged2:
+                st.markdown(f"#### 📅 {m2['label']}")
+                st.dataframe(m2['df_ged'], hide_index=True, use_container_width=True)
+                
+            st.markdown("---")
+            
+            st.markdown("### 💻 2. VISION ERP ARTIS — Journal d'Intégration National Consolidé")
+            c_erp1, c_erp2 = st.columns(2)
+            with c_erp1:
+                st.markdown(f"#### 📅 {m1['label']}")
+                st.dataframe(m1['df_erp'], hide_index=True, use_container_width=True)
+            with c_erp2:
+                st.markdown(f"#### 📅 {m2['label']}")
+                st.dataframe(m2['df_erp'], hide_index=True, use_container_width=True)
+                
+            st.caption("ℹ️ **Note sur l'intégration ERP** : Certaines factures d'achat (abonnements, sous-traitance) peuvent se retrouver en saisie directe dans ARTIS, mais l'essentiel du flux doit transiter par Isiwork (ex. cas connu chez EOLE : TVA à 0%).")
+            
+            # MAIL HTML CÔTE À CÔTE
+            t_ged_html1 = m1['df_ged'].to_html(index=False, border=1, classes='content-table')
+            t_ged_html2 = m2['df_ged'].to_html(index=False, border=1, classes='content-table')
+            t_erp_html1 = m1['df_erp'].to_html(index=False, border=1, classes='content-table')
+            t_erp_html2 = m2['df_erp'].to_html(index=False, border=1, classes='content-table')
+            
+            mail_side_by_side_html = f"""
+            <h3 style="color: #0056b3; margin-top: 20px;">📈 1. VISION GED / ISIWORK — Rapprochement National ({m1['label']} vs {m2['label']})</h3>
+            <table width="100%" border="0" cellspacing="10" cellpadding="0" style="table-layout: fixed;">
+                <tr>
+                    <td valign="top" width="50%">
+                        <h4 style="color: #333; margin-bottom: 5px;">📅 {m1['label']}</h4>
+                        {t_ged_html1}
+                    </td>
+                    <td valign="top" width="50%">
+                        <h4 style="color: #333; margin-bottom: 5px;">📅 {m2['label']}</h4>
+                        {t_ged_html2}
+                    </td>
+                </tr>
+            </table>
+            
+            <h3 style="color: #0056b3; margin-top: 25px;">💻 2. VISION ERP ARTIS — Journal d'Intégration National ({m1['label']} vs {m2['label']})</h3>
+            <table width="100%" border="0" cellspacing="10" cellpadding="0" style="table-layout: fixed;">
+                <tr>
+                    <td valign="top" width="50%">
+                        <h4 style="color: #333; margin-bottom: 5px;">📅 {m1['label']}</h4>
+                        {t_erp_html1}
+                    </td>
+                    <td valign="top" width="50%">
+                        <h4 style="color: #333; margin-bottom: 5px;">📅 {m2['label']}</h4>
+                        {t_erp_html2}
+                    </td>
+                </tr>
+            </table>
+            """
+        else:
+            # Cas 1 seul mois
+            m = computed_months[0]
+            st.markdown(f"### 📈 1. VISION GED / ISIWORK — {m['label']}")
+            st.dataframe(m['df_ged'], hide_index=True, use_container_width=True)
+            st.markdown(f"### 💻 2. VISION ERP ARTIS — {m['label']}")
+            st.dataframe(m['df_erp'], hide_index=True, use_container_width=True)
+            
+            t_ged_html = m['df_ged'].to_html(index=False, border=1, classes='content-table')
+            t_erp_html = m['df_erp'].to_html(index=False, border=1, classes='content-table')
+            
+            mail_side_by_side_html = f"""
+            <h3 style="color: #0056b3; margin-top: 20px;">📈 1. VISION GED / ISIWORK — {m['label']}</h3>
+            {t_ged_html}
+            <h3 style="color: #0056b3; margin-top: 20px;">💻 2. VISION ERP ARTIS — {m['label']}</h3>
+            {t_erp_html}
+            """
+            
+        st.markdown("---")
+        st.markdown("### ✉️ Modèle de Mail National Consolidé (Prêt à copier pour Outlook)")
         
         txt_chantiers_html = "".join([f"<li>{c}</li>" for c in list_chantiers_m1])
         
         mail_groupe_html = f"""
-        <div style="font-family: Arial, sans-serif; font-size: 14px; color: #222; line-height: 1.5; padding: 10px; background-color: #ffffff; border-radius: 5px;">
+        <div style="font-family: Arial, sans-serif; font-size: 13px; color: #222; line-height: 1.5; padding: 10px; background-color: #ffffff; border-radius: 5px;">
             <p>Bonjour à tous,</p>
             
-            <p>Dans le cadre du suivi technique et opérationnel de notre projet de transition de la saisie manuelle vers le pilotage financier automatique, vous trouverez ci-dessous le rapport national récapitulatif consolidé pour l'ensemble de nos filiales actives du Groupe Koesio pour la période de <b>{periode_globale}</b>.</p>
+            <p>Dans le cadre du suivi technique et opérationnel de notre projet de transition de la saisie manuelle vers le pilotage financier automatique, vous trouverez ci-dessous le rapport national récapitulatif comparatif pour l'ensemble de nos filiales actives du Groupe Koesio pour la période de <b>{periode_globale}</b>.</p>
             
             <p>Conformément à nos spécifications de pilotage Groupe validées en comité, ce rapport isole de manière stricte les flux qualifiés de <b>« GED Pure / FAF Artis »</b> afin de ne pas fausser l'efficacité machine réelle de rapprochement de notre plateforme Isiwork.</p>
             
-            {html_mail_sections}
+            {mail_side_by_side_html}
             
-            <p style="font-size: 12px; color: #555; margin-top: 10px;">
+            <p style="font-size: 11px; color: #555; margin-top: 10px;">
                 <i>* Note : Certaines factures d'achat (abonnements, sous-traitance) peuvent se retrouver en saisie directe dans ARTIS, mais le flux doit être majoritairement issu d'Isiwork. Si ce n'est pas le cas, une analyse des pièces saisies en direct s'impose (ex. cas connu chez EOLE : TVA à 0%).</i>
             </p>
             
@@ -614,7 +702,32 @@ with tab2:
         </div>
         """
         
-        st.components.v1.html(mail_groupe_html, height=1200, scrolling=True)
+        st.markdown("""
+        <style>
+            .content-table {
+                border-collapse: collapse;
+                margin: 10px 0;
+                font-size: 11px;
+                min-width: 100%;
+                border: 1px solid #dddddd;
+            }
+            .content-table th {
+                background-color: #0056b3;
+                color: #ffffff;
+                text-align: left;
+                padding: 6px 8px;
+            }
+            .content-table td {
+                padding: 6px 8px;
+                border: 1px solid #dddddd;
+            }
+            .content-table tr:nth-of-type(even) {
+                background-color: #f9f9f9;
+            }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        st.components.v1.html(mail_groupe_html, height=1300, scrolling=True)
         
     else:
         st.warning("👈 Téléversez les fichiers de vos différentes filiales dans la barre latérale pour afficher la consolidation groupe.")
