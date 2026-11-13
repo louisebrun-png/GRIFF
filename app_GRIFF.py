@@ -444,6 +444,8 @@ def parse_pdf_history_full(pdf_files, pasted_text=""):
 
     return hist_data, hist_month_label, chantiers, parse_status
 
+dict_hist_m1, hist_month_m1_label, list_chantiers_m1, pdf_parse_status = parse_pdf_history_full(file_history_input, pasted_history_text)
+
 def get_hist_auto_for_filiale(filiale_name, compare_dict):
     """Recherche le taux M-1 extrait du PDF pour une filiale donnée (sans valeur en dur)."""
     if not compare_dict or not filiale_name:
@@ -1317,3 +1319,4 @@ with tab2:
         
     else:
         st.warning("👈 Téléversez les fichiers de vos différentes filiales dans la barre latérale pour afficher la consolidation groupe.")
+
