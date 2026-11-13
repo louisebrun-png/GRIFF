@@ -688,9 +688,23 @@ with tab1:
         label_prev_filiale = hist_month_m1_label
         computed_filiale_months = []
         
+        def clean_filiale_df(df_table):
+            """Supprime la ligne TOTAL redondante lorsqu'il n'y a qu'une seule filiale analysée."""
+            if df_table is None or df_table.empty:
+                return df_table
+            # Si 2 lignes (1 filiale + 1 ligne TOTAL), on ne garde que la ligne de la filiale
+            if len(df_table) == 2 and "Filiale Groupe" in df_table.columns:
+                df_one = df_table[~df_table["Filiale Groupe"].astype(str).str.startswith("TOTAL")].copy()
+                if "Rang" in df_one.columns:
+                    df_one = df_one.drop(columns=["Rang"])
+                return df_one
+            return df_table
+
         for p in all_periods_p:
             lbl_m = f"{mois_fr.get(p.month, str(p.month))} {p.year}"
             df_g_m, df_e_m, dict_auto_m = compute_consolidation_for_period(p, compare_dict=dict_prev_filiale, compare_label=label_prev_filiale)
+            df_g_m = clean_filiale_df(df_g_m)
+            df_e_m = clean_filiale_df(df_e_m)
             
             # Récupération du taux auto actuel et précédent de la filiale
             filiale_cle = filiale_detectee.split(",")[0].strip()
