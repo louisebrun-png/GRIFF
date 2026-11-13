@@ -281,16 +281,15 @@ def parse_pdf_history_full(pdf_file, pasted_text=""):
         7: "Juillet", 8: "Août", 9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre"
     }
 
-    # Si le mail est un transfert/réponse contenant "Le ... a écrit :" tout en haut (avant "1. VISION GED"), on garde le corps après "a écrit :"
-    if " a écrit" in text_norm and "1. VISION GED" in text_norm:
-        pos_ecrit = text_norm.find(" a écrit")
-        pos_vis1 = text_norm.find("1. VISION GED")
-        if pos_ecrit < pos_vis1:
-            # Le rapport se trouve DANS le message transféré/cité
-            text_norm = text_norm[pos_ecrit:]
-        else:
-            # Un ancien rapport est cité en bas de page -> on le coupe pour ne pas polluer le mois courant
-            text_norm = text_norm[:pos_ecrit]
+    # Ignorer l'en-tête Gmail (ex: "26 octobre 2026 à 09:44") en démarrant au corps du mail ("Bonjour") ou à "1. VISION GED"
+    if "Bonjour" in text_norm:
+        text_norm = text_norm[text_norm.find("Bonjour"):]
+    elif "1. VISION GED" in text_norm:
+        text_norm = text_norm[text_norm.find("1. VISION GED"):]
+
+    # Si un ancien rapport est cité en bas de page ("Le ... a écrit :"), on le coupe pour ne pas polluer M-1
+    if " a écrit" in text_norm:
+        text_norm = text_norm.split(" a écrit")[0]
 
     # On isole la section 1 (Vision GED) avant la section 2 (Vision ERP)
     sec_ged = text_norm.split("2. VISION ERP")[0] if "2. VISION ERP" in text_norm else text_norm
