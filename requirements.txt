@@ -3,4 +3,6 @@ pandas
 openpyxl
 pypdf
 pymupdf
-rapidocr-onnxruntime
+pytesseract
+Pillow
+beautifulsoup4
