@@ -143,13 +143,21 @@ CORRESPONDANCE_ZEENDOC = {
 }
 
 def canonicalize_filiale(raw_name):
-    """Mappe tout libellé (Artis, Zeendoc, PDF) vers le nom officiel de la filiale dans CORRESPONDANCE_ZEENDOC."""
+    """Mappe tout libellé (Artis, Zeendoc, PDF ou OCR) vers le nom officiel de la filiale dans CORRESPONDANCE_ZEENDOC."""
     if pd.isna(raw_name) or not str(raw_name).strip():
         return "Inconnue"
     s_clean = str(raw_name).strip()
-    s_up = s_clean.upper()
+    # Nettoyage des artefacts OCR fréquents sur les PDF imprimés depuis navigateur
+    s_ocr_clean = (
+        s_clean.upper()
+        .replace("KOES10", "KOESIO")
+        .replace("KOE$10", "KOESIO")
+        .replace("KO$IO", "KOESIO")
+        .replace("QUEST", "OUEST")
+        .replace("217 S8LUTIONS", "2IT SOLUTIONS")
+        .replace("217 SOLUTIONS", "2IT SOLUTIONS")
+    )
 
-    # Vérification exacte ou par alias (les libellés les plus spécifiques d'abord)
     ordered_keys = [
         "KOESIO NORD OUEST",
         "KOESIO ILE DE FRANCE",
@@ -166,7 +174,7 @@ def canonicalize_filiale(raw_name):
     for canon_key in ordered_keys:
         aliases = CORRESPONDANCE_ZEENDOC.get(canon_key, [canon_key])
         for alias in aliases:
-            if alias.upper() in s_up:
+            if alias.upper() in s_ocr_clean:
                 return canon_key
     return s_clean
 
@@ -211,14 +219,13 @@ def extract_text_from_pdf(pdf_file):
     is_image_only = False
     if not text_out.strip():
         is_image_only = True
-        # 4a. RapidOCR + PyMuPDF (100% Python, fonctionne sur Streamlit Cloud sans binaire système)
         if HAS_RAPIDOCR and HAS_PYMUPDF:
             try:
                 ocr_engine = RapidOCR()
                 doc = fitz.open(stream=pdf_bytes, filetype="pdf")
                 ocr_lines = []
                 for page in doc:
-                    pix = page.get_pixmap(dpi=180)
+                    pix = page.get_pixmap(dpi=200)
                     img_bytes = pix.tobytes("png")
                     result, _ = ocr_engine(img_bytes)
                     if result:
@@ -226,7 +233,6 @@ def extract_text_from_pdf(pdf_file):
                 text_out = "\n".join(ocr_lines)
             except Exception:
                 pass
-        # 4b. Tesseract fallback
         if not text_out.strip() and HAS_OCR:
             try:
                 images = convert_from_bytes(pdf_bytes, dpi=200)
@@ -241,14 +247,13 @@ def extract_text_from_pdf(pdf_file):
 def parse_pdf_history_full(pdf_file, pasted_text=""):
     """
     Parse exclusivement le PDF historique téléversé ou le texte collé (aucun taux hardcodé).
-    Supporte :
-      - Format Rapport National Consolidé Groupe (multi-filiales, mono ou bi-mois, ex. Septembre 2026)
-      - Format Mail Filiale Individuel (historique mensuel d'une filiale)
+    Gère aussi bien les rapports mensuels simples (1 mois) que les rapports comparatifs (2 mois côte à côte,
+    ex: Août 2026 vs Septembre 2026) en extrayant uniquement les chiffres du mois le plus récent (Septembre).
     """
     hist_data = {}
     hist_month_label = "M-1"
     chantiers = []
-    parse_status = "no_pdf"  # "no_pdf", "ok", "image_pdf_no_ocr", "empty_match"
+    parse_status = "no_pdf"
 
     if not pdf_file and not (pasted_text and pasted_text.strip()):
         return hist_data, hist_month_label, chantiers, parse_status
@@ -263,11 +268,9 @@ def parse_pdf_history_full(pdf_file, pasted_text=""):
         parse_status = "image_pdf_no_ocr" if is_image_only else "empty_match"
         return hist_data, hist_month_label, chantiers, parse_status
 
-    # Normalisation des espaces multiples et retours à la ligne dans les noms de filiales coupés sur 2 lignes
-    # Ex: "KOESIO ILE DE\nFRANCE" -> "KOESIO ILE DE FRANCE"
-    text_norm = re.sub(r'([A-ZÀ-Ÿ])\n([A-ZÀ-Ÿ])', r'\1 \2', full_text)
+    # Normalisation des retours à la ligne au sein des libellés et corrections OCR légères
+    text_norm = re.sub(r'([A-ZÀ-Ÿ0-9$])\n([A-ZÀ-Ÿ0-9])', r'\1 \2', full_text)
 
-    # Détection CHRONOLOGIQUE du mois le plus récent (et non la dernière occurrence textuelle, qui peut être un "[vs Août 2026]" dans une cellule)
     mois_to_num = {
         "janvier": 1, "février": 2, "fevrier": 2, "mars": 3, "avril": 4,
         "mai": 5, "juin": 6, "juillet": 7, "août": 8, "aout": 8,
@@ -277,87 +280,115 @@ def parse_pdf_history_full(pdf_file, pasted_text=""):
         1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
         7: "Juillet", 8: "Août", 9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre"
     }
-    top_section = text_norm.split("2. VISION ERP")[0] if "2. VISION ERP" in text_norm else text_norm[:3500]
-    if " a écrit" in top_section:
-        top_section = top_section.split(" a écrit")[0]
 
-    mois_top = re.findall(
+    # Si le mail est un transfert/réponse contenant "Le ... a écrit :" tout en haut (avant "1. VISION GED"), on garde le corps après "a écrit :"
+    if " a écrit" in text_norm and "1. VISION GED" in text_norm:
+        pos_ecrit = text_norm.find(" a écrit")
+        pos_vis1 = text_norm.find("1. VISION GED")
+        if pos_ecrit < pos_vis1:
+            # Le rapport se trouve DANS le message transféré/cité
+            text_norm = text_norm[pos_ecrit:]
+        else:
+            # Un ancien rapport est cité en bas de page -> on le coupe pour ne pas polluer le mois courant
+            text_norm = text_norm[:pos_ecrit]
+
+    # On isole la section 1 (Vision GED) avant la section 2 (Vision ERP)
+    sec_ged = text_norm.split("2. VISION ERP")[0] if "2. VISION ERP" in text_norm else text_norm
+
+    # Détection chronologique des mois présents dans la section 1
+    mois_found = re.findall(
         r'(Janvier|Février|Fevrier|Mars|Avril|Mai|Juin|Juillet|Août|Aout|Septembre|Octobre|Novembre|Décembre|Decembre)\s+(20\d{2})',
-        top_section,
+        sec_ged,
         flags=re.IGNORECASE
     )
-    if mois_top:
-        # On trie chronologiquement (année, mois) et on prend le mois le plus récent du rapport (ex: Septembre 2026 > Août 2026)
-        parsed_periods = []
-        for m_str, y_str in mois_top:
-            m_num = mois_to_num.get(m_str.lower())
-            if m_num:
-                parsed_periods.append((int(y_str), m_num))
-        if parsed_periods:
-            latest_y, latest_m = max(parsed_periods)
-            hist_month_label = f"{num_to_mois[latest_m]} {latest_y}"
+    unique_periods = sorted(list({
+        (int(y_s), mois_to_num[m_s.lower()])
+        for m_s, y_s in mois_found
+        if m_s.lower() in mois_to_num
+    }))
 
-    # 1. Extraction des lignes de filiales (Format Rapport National Consolidé)
-    # On isole la section "1. VISION GED" avant le mail cité antérieur (ex: "Le mar. 25 août")
-    sec_ged = text_norm.split("2. VISION ERP")[0] if "2. VISION ERP" in text_norm else text_norm
-    if "Le " in sec_ged and " a écrit" in sec_ged:
-        sec_ged = sec_ged.split(" a écrit")[0]
+    older_month_name = None
+    if unique_periods:
+        latest_y, latest_m = unique_periods[-1]
+        hist_month_label = f"{num_to_mois[latest_m]} {latest_y}"
+        if len(unique_periods) >= 2:
+            _, older_m = unique_periods[-2]
+            older_month_name = num_to_mois[older_m]  # ex: "Août"
 
-    # Motif capturant chaque nom de filiale suivi de ses blocs de taux "XX.X% (NNN)"
+    # Motif capturant chaque filiale (y compris variantes OCR) + TOTAL GROUPE CONSOLIDÉ
     entity_regex = (
-        r'(KOESIO\s+(?:ILE\s+DE\s+FRANCE|ÎLE-DE-FRANCE|CENTRE\s+EST|NORD\s+OUEST|NORD-OUEST|'
-        r'MEDITERRANEE|MÉDITERRANÉE|OCCITANIE|AQUITAINE|OUEST|PACA|EST|EOLE)|'
-        r'2iT\s*solutions|2IT\s*SOLUTIONS|EOLE|TOTAL\s+GROUPE\s+CONSOLID[EÉ])'
+        r'((?:KOESIO|KOES10|KOE\$10|KO\$IO)\s+(?:ILE\s+DE\s+FRANCE|ÎLE-DE-FRANCE|CENTRE\s+EST|'
+        r'NORD\s+(?:OUEST|QUEST)|NORD-(?:OUEST|QUEST)|MEDITERRANEE|MÉDITERRANÉE|OCCITANIE|AQUITAINE|'
+        r'(?:OUEST|QUEST)|PACA|EST|EOLE)|'
+        r'(?:2iT|2IT|217)\s*(?:solutions|s8lutions)|EOLE|TOTAL\s+GROUPE\s+CONSOLID[EÉ])'
     )
 
-    for m_ent in re.finditer(entity_regex, sec_ged, flags=re.IGNORECASE):
-        raw_ent = re.sub(r'\s+', ' ', m_ent.group(1)).strip()
-        canon_ent = "TOTAL GROUPE CONSOLIDÉ" if "TOTAL" in raw_ent.upper() else canonicalize_filiale(raw_ent)
-        # Fenêtre de texte suivant le nom de la filiale sur la même ligne/bloc
-        window = sec_ged[m_ent.end():m_ent.end() + 260]
-        # Arrêt avant la prochaine filiale éventuelle
-        next_m = re.search(entity_regex, window, flags=re.IGNORECASE)
-        if next_m:
-            window = window[:next_m.start()]
-
-        # Tous les pourcentages suivis d'un volume entre parenthèses : ex "53.7% (359)" et "37.2% (163)"
-        pct_matches = re.findall(r'(\d{1,3}[.,]\d)\s*%\s*\(\s*\d[\d\s]*\)', window)
-        if pct_matches:
-            # Si tableau comparatif 2 mois (Août et Septembre), le 1er bloc = M-2 et le 2ème bloc = M-1 (le plus récent)
-            # Chaque bloc commence par le % Rapprochement Auto suivi du % Faux Manuel, % Vrai Manuel...
-            # En bi-mois, le dernier taux auto de la ligne correspond au mois le plus récent (Septembre)
-            if len(pct_matches) >= 6:
-                # 2 mois côte à côte (4 ou 5 taux par mois -> le taux auto de M-1 est la 5ème ou 6ème occurrence)
-                val_auto = float(pct_matches[5].replace(',', '.'))
-            elif len(pct_matches) >= 5:
-                val_auto = float(pct_matches[4].replace(',', '.'))
-            else:
-                val_auto = float(pct_matches[0].replace(',', '.'))
-            hist_data[canon_ent] = val_auto
-
-    # 2. Extraction Format Mail Filiale Individuel (ex: "Septembre 2026 | 356 | 11.0% (44) | 36.8% (131)")
-    if not hist_data:
+    # 1. Détection prioritaire du format Mail Filiale Individuel (lignes mensuelles : "Septembre 2026 | 258 | 19.6% (63) | 23.6% (61)")
+    # Caractérisé par la présence de "Mois Comptable" ou l'absence de "TOTAL GROUPE CONSOLIDÉ"
+    is_individual_mail = ("MOIS COMPTABLE" in sec_ged.upper()) or ("TOTAL GROUPE" not in sec_ged.upper())
+    if is_individual_mail:
         filiale_pdf = None
         m_fil = re.search(entity_regex, sec_ged, flags=re.IGNORECASE)
         if m_fil and "TOTAL" not in m_fil.group(1).upper():
             filiale_pdf = canonicalize_filiale(re.sub(r'\s+', ' ', m_fil.group(1)).strip())
 
         pattern_mois_filiale = re.findall(
-            r'(Janvier|Février|Mars|Avril|Mai|Juin|Juillet|Août|Aout|Septembre|Octobre|Novembre|Décembre)\s+(20\d{2}).*?(\d{1,3}[.,]\d)\s*%\s*\(\d+\)\s+(\d{1,3}[.,]\d)\s*%\s*\(\d+\)',
+            r'(Janvier|Février|Fevrier|Mars|Avril|Mai|Juin|Juillet|Août|Aout|Septembre|Octobre|Novembre|Décembre|Decembre)\s+(20\d{2})[^\d%]{1,40}\d[\d\s]*[^\d%]{1,30}(\d{1,3}[.,]\d)\s*%\s*\(\s*\d[\d\s]*\)[^\d%]{1,30}(\d{1,3}[.,]\d)\s*%\s*\(\s*\d[\d\s]*\)',
             sec_ged,
             flags=re.IGNORECASE | re.DOTALL
         )
         if pattern_mois_filiale:
-            last_m, last_y, _, auto_str = pattern_mois_filiale[-1]
-            last_m = "Août" if last_m.lower() == "aout" else last_m.capitalize()
-            hist_month_label = f"{last_m} {last_y}"
-            auto_val = float(auto_str.replace(',', '.'))
-            if filiale_pdf:
-                hist_data[filiale_pdf] = auto_val
-            else:
-                hist_data["FILIALE_PDF"] = auto_val
+            best_period = (-1, -1)
+            best_auto = None
+            for m_s, y_s, _, auto_str in pattern_mois_filiale:
+                m_num = mois_to_num.get(m_s.lower(), 0)
+                per = (int(y_s), m_num)
+                if per > best_period:
+                    best_period = per
+                    best_auto = float(auto_str.replace(',', '.'))
+            if best_auto is not None:
+                hist_month_label = f"{num_to_mois[best_period[1]]} {best_period[0]}"
+                if filiale_pdf:
+                    hist_data[filiale_pdf] = best_auto
+                else:
+                    hist_data["FILIALE_PDF"] = best_auto
 
-    # 3. Extraction dynamique de la section 4 (Suivi des chantiers techniques) depuis le PDF
+    # 2. Format Rapport National Consolidé Groupe (multi-filiales)
+    if not hist_data:
+        all_matches = list(re.finditer(entity_regex, sec_ged, flags=re.IGNORECASE))
+        candidates_by_entity = {}
+
+        for idx_m, m_ent in enumerate(all_matches):
+            raw_ent = re.sub(r'\s+', ' ', m_ent.group(1)).strip()
+            canon_ent = "TOTAL GROUPE CONSOLIDÉ" if "TOTAL" in raw_ent.upper() else canonicalize_filiale(raw_ent)
+
+            end_pos = all_matches[idx_m + 1].start() if idx_m + 1 < len(all_matches) else min(len(sec_ged), m_ent.end() + 250)
+            window = sec_ged[m_ent.end():end_pos]
+
+            m_auto = re.search(r'(\d{1,3}[.,]\d)\s*%\s*\(\s*\d[\d\s]*\)', window)
+            if not m_auto:
+                continue
+
+            val_auto = float(m_auto.group(1).replace(',', '.'))
+            has_vs_older = bool(older_month_name and re.search(rf'vs\s+{older_month_name}', window, flags=re.IGNORECASE))
+            candidates_by_entity.setdefault(canon_ent, []).append({
+                "val": val_auto,
+                "pos": m_ent.start(),
+                "has_vs_older": has_vs_older
+            })
+
+        is_two_month_report = len(unique_periods) >= 2
+        for canon_ent, entries in candidates_by_entity.items():
+            if is_two_month_report:
+                right_entries = [e for e in entries if e["has_vs_older"]]
+                if right_entries:
+                    hist_data[canon_ent] = right_entries[-1]["val"]
+                elif len(entries) >= 2:
+                    hist_data[canon_ent] = entries[-1]["val"]
+            else:
+                hist_data[canon_ent] = entries[-1]["val"]
+
+    # Extraction dynamique de la section 4 (Suivi des chantiers techniques) depuis le PDF
     m_sec4 = re.search(r'4\.\s*SUIVI DES CHANTIERS[^\n]*\n(.*?)(?:Cordialement|Louise BRUN|https://|$)', text_norm, flags=re.IGNORECASE | re.DOTALL)
     if m_sec4:
         raw_lines = [l.strip(" •-\t") for l in m_sec4.group(1).splitlines() if l.strip()]
