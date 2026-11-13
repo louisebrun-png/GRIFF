@@ -28,6 +28,12 @@ except ImportError:
     HAS_PYMUPDF = False
 
 try:
+    from rapidocr_onnxruntime import RapidOCR
+    HAS_RAPIDOCR = True
+except ImportError:
+    HAS_RAPIDOCR = False
+
+try:
     import pytesseract
     from pdf2image import convert_from_bytes
     HAS_OCR = True
@@ -96,6 +102,12 @@ file_history_input = st.sidebar.file_uploader(
     accept_multiple_files=False,
     key=f"hist_{u_key}",
     help="Téléversez le rapport PDF du mois précédent (Groupe ou Filiale) pour extraire l'historique M-1."
+)
+pasted_history_text = st.sidebar.text_area(
+    "Ou collez le texte du mail M-1 (optionnel)",
+    height=90,
+    key=f"hist_txt_{u_key}",
+    placeholder="Collez ici le contenu du mail M-1 si votre PDF est une image scannée..."
 )
 
 all_uploaded_files = (files_isiwork_input or []) + (files_artis_input or [])
@@ -195,11 +207,27 @@ def extract_text_from_pdf(pdf_file):
         except Exception:
             pass
 
-    # 4. OCR Tesseract si PDF imprimé en mode image (ex: "Print to PDF" navigateur)
+    # 4. OCR automatique (RapidOCR pure-Python ou Tesseract) si PDF imprimé en mode image (Chrome/Gmail)
     is_image_only = False
     if not text_out.strip():
         is_image_only = True
-        if HAS_OCR:
+        # 4a. RapidOCR + PyMuPDF (100% Python, fonctionne sur Streamlit Cloud sans binaire système)
+        if HAS_RAPIDOCR and HAS_PYMUPDF:
+            try:
+                ocr_engine = RapidOCR()
+                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                ocr_lines = []
+                for page in doc:
+                    pix = page.get_pixmap(dpi=180)
+                    img_bytes = pix.tobytes("png")
+                    result, _ = ocr_engine(img_bytes)
+                    if result:
+                        ocr_lines.append("\n".join([item[1] for item in result]))
+                text_out = "\n".join(ocr_lines)
+            except Exception:
+                pass
+        # 4b. Tesseract fallback
+        if not text_out.strip() and HAS_OCR:
             try:
                 images = convert_from_bytes(pdf_bytes, dpi=200)
                 ocr_texts = [pytesseract.image_to_string(img, lang="fra") for img in images]
@@ -210,9 +238,9 @@ def extract_text_from_pdf(pdf_file):
     return text_out, is_image_only
 
 @st.cache_data
-def parse_pdf_history_full(pdf_file):
+def parse_pdf_history_full(pdf_file, pasted_text=""):
     """
-    Parse exclusivement le PDF historique téléversé (aucun taux hardcodé).
+    Parse exclusivement le PDF historique téléversé ou le texte collé (aucun taux hardcodé).
     Supporte :
       - Format Rapport National Consolidé Groupe (multi-filiales, mono ou bi-mois, ex. Septembre 2026)
       - Format Mail Filiale Individuel (historique mensuel d'une filiale)
@@ -222,10 +250,14 @@ def parse_pdf_history_full(pdf_file):
     chantiers = []
     parse_status = "no_pdf"  # "no_pdf", "ok", "image_pdf_no_ocr", "empty_match"
 
-    if not pdf_file:
+    if not pdf_file and not (pasted_text and pasted_text.strip()):
         return hist_data, hist_month_label, chantiers, parse_status
 
-    full_text, is_image_only = extract_text_from_pdf(pdf_file)
+    if pasted_text and pasted_text.strip():
+        full_text = pasted_text
+        is_image_only = False
+    else:
+        full_text, is_image_only = extract_text_from_pdf(pdf_file)
 
     if not full_text.strip():
         parse_status = "image_pdf_no_ocr" if is_image_only else "empty_match"
@@ -235,23 +267,35 @@ def parse_pdf_history_full(pdf_file):
     # Ex: "KOESIO ILE DE\nFRANCE" -> "KOESIO ILE DE FRANCE"
     text_norm = re.sub(r'([A-ZÀ-Ÿ])\n([A-ZÀ-Ÿ])', r'\1 \2', full_text)
 
-    # Détection du dernier mois mentionné dans l'en-tête ou les colonnes (ex: "Septembre 2026")
-    mois_list = re.findall(
-        r'(Janvier|Février|Mars|Avril|Mai|Juin|Juillet|Août|Aout|Septembre|Octobre|Novembre|Décembre)\s+(20\d{2})',
-        text_norm,
+    # Détection CHRONOLOGIQUE du mois le plus récent (et non la dernière occurrence textuelle, qui peut être un "[vs Août 2026]" dans une cellule)
+    mois_to_num = {
+        "janvier": 1, "février": 2, "fevrier": 2, "mars": 3, "avril": 4,
+        "mai": 5, "juin": 6, "juillet": 7, "août": 8, "aout": 8,
+        "septembre": 9, "octobre": 10, "novembre": 11, "décembre": 12, "decembre": 12
+    }
+    num_to_mois = {
+        1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
+        7: "Juillet", 8: "Août", 9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre"
+    }
+    top_section = text_norm.split("2. VISION ERP")[0] if "2. VISION ERP" in text_norm else text_norm[:3500]
+    if " a écrit" in top_section:
+        top_section = top_section.split(" a écrit")[0]
+
+    mois_top = re.findall(
+        r'(Janvier|Février|Fevrier|Mars|Avril|Mai|Juin|Juillet|Août|Aout|Septembre|Octobre|Novembre|Décembre|Decembre)\s+(20\d{2})',
+        top_section,
         flags=re.IGNORECASE
     )
-    if mois_list:
-        # On prend le mois le plus récent présent dans le rapport (avant le mail cité éventuel)
-        top_section = text_norm.split("2. VISION ERP")[0] if "2. VISION ERP" in text_norm else text_norm[:3500]
-        mois_top = re.findall(
-            r'(Janvier|Février|Mars|Avril|Mai|Juin|Juillet|Août|Aout|Septembre|Octobre|Novembre|Décembre)\s+(20\d{2})',
-            top_section,
-            flags=re.IGNORECASE
-        )
-        chosen_m, chosen_y = mois_top[-1] if mois_top else mois_list[0]
-        chosen_m = "Août" if chosen_m.lower() == "aout" else chosen_m.capitalize()
-        hist_month_label = f"{chosen_m} {chosen_y}"
+    if mois_top:
+        # On trie chronologiquement (année, mois) et on prend le mois le plus récent du rapport (ex: Septembre 2026 > Août 2026)
+        parsed_periods = []
+        for m_str, y_str in mois_top:
+            m_num = mois_to_num.get(m_str.lower())
+            if m_num:
+                parsed_periods.append((int(y_str), m_num))
+        if parsed_periods:
+            latest_y, latest_m = max(parsed_periods)
+            hist_month_label = f"{num_to_mois[latest_m]} {latest_y}"
 
     # 1. Extraction des lignes de filiales (Format Rapport National Consolidé)
     # On isole la section "1. VISION GED" avant le mail cité antérieur (ex: "Le mar. 25 août")
@@ -322,7 +366,7 @@ def parse_pdf_history_full(pdf_file):
     parse_status = "ok" if hist_data else "empty_match"
     return hist_data, hist_month_label, chantiers, parse_status
 
-dict_hist_m1, hist_month_m1_label, list_chantiers_m1, pdf_parse_status = parse_pdf_history_full(file_history_input)
+dict_hist_m1, hist_month_m1_label, list_chantiers_m1, pdf_parse_status = parse_pdf_history_full(file_history_input, pasted_history_text)
 
 def get_hist_auto_for_filiale(filiale_name, compare_dict):
     """Recherche le taux M-1 extrait du PDF pour une filiale donnée (sans valeur en dur)."""
@@ -791,7 +835,7 @@ if file_history_input is not None:
     if pdf_parse_status == "ok":
         st.sidebar.success(f"✅ Historique M-1 extrait ({hist_month_m1_label}) : {len(dict_hist_m1)} entité(s) lue(s) dans le PDF.")
     elif pdf_parse_status == "image_pdf_no_ocr":
-        st.sidebar.warning("⚠️ Ce PDF est une image scannée sans texte sélectionnable (enregistrez-le en PDF natif ou installez Tesseract OCR pour lire les chiffres).")
+        st.sidebar.warning("⚠️ PDF image détecté : ajoutez `pymupdf` et `rapidocr-onnxruntime` dans votre `requirements.txt` Streamlit Cloud, ou collez directement le texte du mail dans la zone juste au-dessus.")
     else:
         st.sidebar.warning("⚠️ Aucun taux historique n'a pu être extrait de ce PDF.")
 
