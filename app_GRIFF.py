@@ -327,11 +327,11 @@ def parse_single_history_text(full_text):
             end_w = month_matches[idx_mm + 1].start() if idx_mm + 1 < len(month_matches) else min(len(sec_ged), mm.end() + 220)
             row_window = sec_ged[mm.end():end_w]
 
-            # Tous les couples "XX.X% (NNN)" sur cette ligne mensuelle
-            pct_tokens = [float(x.replace(',', '.')) for x in re.findall(r'(\d{1,3}[.,]\d)\s*%\s*\(\s*\d[\d\s]*\)', row_window)]
-            if len(pct_tokens) >= 4:
-                # Si 5 tokens (Flux GED Pure en % + 4 colonnes Auto/Faux/Vrai/Attente), Auto est l'index 1
-                # Si 4 tokens (Flux GED Pure en entier + 4 colonnes Auto/Faux/Vrai/Attente), Auto est l'index 0
+            # Extraction de tous les pourcentages "XX.X%" sur la ligne mensuelle (indépendamment des retours à la ligne OCR sur "(NNN)")
+            pct_tokens = [float(x.replace(',', '.')) for x in re.findall(r'(\d{1,3}[.,]\d)\s*%', row_window)]
+            if len(pct_tokens) >= 2:
+                # Si 5 pourcentages (Flux GED Pure en % + Auto/Faux/Vrai/Attente), Auto est à l'index 1
+                # Si 4 pourcentages (Flux GED Pure en entier + Auto/Faux/Vrai/Attente), Auto est à l'index 0
                 auto_val = pct_tokens[1] if len(pct_tokens) >= 5 else pct_tokens[0]
                 if per >= best_period:
                     best_period = per
@@ -789,11 +789,18 @@ def compute_consolidation_for_period(p_period, compare_dict=None, compare_label=
     dict_pct_auto_out["TOTAL GROUPE CONSOLIDÉ"] = pct_tot_a
     
     str_tot_auto = f"{pct_tot_a:.1f}% ({tot_auto})"
-    if compare_dict and "TOTAL GROUPE CONSOLIDÉ" in compare_dict:
-        tot_comp = compare_dict["TOTAL GROUPE CONSOLIDÉ"]
-        delta_tot = pct_tot_a - tot_comp
-        symb_tot = "↗️" if delta_tot > 0.5 else "↘️" if delta_tot < -0.5 else "➡️"
-        str_tot_auto += f" [{symb_tot} {delta_tot:+.1f}% vs {compare_label}]"
+    if compare_dict:
+        tot_comp = compare_dict.get("TOTAL GROUPE CONSOLIDÉ")
+        if tot_comp is None:
+            # Si seuls des mails individuels filiales ont été chargés, on calcule la moyenne des taux M-1 des filiales présentes
+            matched_vals = [get_hist_auto_for_filiale(fn, compare_dict) for fn in filiales_g]
+            matched_vals = [v for v in matched_vals if v is not None]
+            if matched_vals:
+                tot_comp = sum(matched_vals) / len(matched_vals)
+        if tot_comp is not None:
+            delta_tot = pct_tot_a - tot_comp
+            symb_tot = "↗️" if delta_tot > 0.5 else "↘️" if delta_tot < -0.5 else "➡️"
+            str_tot_auto += f" [{symb_tot} {delta_tot:+.1f}% vs {compare_label}]"
 
     rows_ged_groupe.append({
         "Rang": "—",
@@ -911,10 +918,10 @@ MAIL_TABLE_CSS = """
 # Alerte informative dans la barre latérale sur l'état de lecture du PDF historique M-1
 if file_history_input or (pasted_history_text and pasted_history_text.strip()):
     if pdf_parse_status == "ok":
-        details_str = ", ".join([f"{k}: {v:.1f}%" for k, v in dict_hist_m1.items()])
-        st.sidebar.success(f"✅ Historique {hist_month_m1_label} extrait ({len(dict_hist_m1)}) : {details_str}")
+        details_str = " | ".join([f"{k}: {v:.1f}%" for k, v in dict_hist_m1.items()])
+        st.sidebar.success(f"✅ Historique {hist_month_m1_label} extrait ({len(dict_hist_m1)} filiale(s)) : {details_str}")
     elif pdf_parse_status == "image_pdf_no_ocr":
-        st.sidebar.warning("⚠️ PDF image détecté : ajoutez `pymupdf` et `rapidocr-onnxruntime` dans votre `requirements.txt` Streamlit Cloud, ou collez directement le texte du mail dans la zone juste au-dessus.")
+        st.sidebar.warning("⚠️ PDF image détecté sans moteur OCR actif : vérifiez `requirements.txt` (`pymupdf` + `rapidocr-onnxruntime`) ou collez le texte du mail ci-dessus.")
     else:
         st.sidebar.warning("⚠️ Aucun taux historique n'a pu être extrait de ce PDF.")
 
@@ -1319,4 +1326,3 @@ with tab2:
         
     else:
         st.warning("👈 Téléversez les fichiers de vos différentes filiales dans la barre latérale pour afficher la consolidation groupe.")
-
