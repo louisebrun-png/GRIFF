@@ -1,6 +1,6 @@
 # ==============================================================================
 # APPLICATION : GRIFF — Tour de Contrôle Koesio
-# DESCRIPTION : Analyse mensuelle, historique M-1 et suivi des chantiers
+# DESCRIPTION : Analyse mensuelle, historique M-1, suivi PA et génération de mails
 # AUTEUR      : Louise BRUN - Koesio Groupe
 # ==============================================================================
 
@@ -95,14 +95,15 @@ st.info(
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 5. HISTORIQUE M-1 (JUILLET 2026) PAR DÉFAUT ET DEPUIS LE MAIL PDF
+# 5. HISTORIQUE M-1 PAR DÉFAUT ET EXTRACTION DEPUIS LE MAIL PDF
 # ------------------------------------------------------------------------------
 HISTORIQUE_DEFAULT_M1 = {
     "KOESIO CENTRE EST": 48.5,
     "KOESIO EST": 40.3,
     "KOESIO NORD OUEST": 34.1,
     "KOESIO NORD-OUEST": 34.1,
-    "KOESIO ILE DE FRANCE": 29.6,
+    "KOESIO ILE DE FRANCE": 36.8,
+    "KOESIO IDF": 36.8,
     "KOESIO OCCITANIE": 36.9,
     "EOLE": 34.2,
     "2IT SOLUTIONS": 8.8,
@@ -113,30 +114,107 @@ HISTORIQUE_DEFAULT_M1 = {
 
 @st.cache_data
 def parse_pdf_history_full(pdf_file):
+    """Extrait l'historique M-1 (taux auto filiale / groupe, mois précédent et chantiers) depuis le PDF."""
     hist_data = HISTORIQUE_DEFAULT_M1.copy()
+    hist_month_label = "M-1"
     chantiers = [
-        "Alerte Référentiels Prix : SHARP, ACTUAL SYSTEMES, KATUN FRANCE.",
-        "Correctif API TVA : Suivi de la livraison globale sur Artis v2."
+        "Stabilité opérationnelle de l'ERP : L'injection finale en comptabilité confirme la performance du batch automatique sans intervention utilisateur.",
+        "Levier \"Frais Annexes\" : Les Faux Manuels s'expliquent par l'absence des lignes de frais de port ou DEEE sur la commande d'achat ou le BL initial dans Artis.",
+        "Alerte Référentiels Prix : Suivi des mises à jour tarifaires en amont sur les partenaires stratégiques."
     ]
     if not pdf_file or not HAS_PYPDF:
-        return hist_data, chantiers
+        return hist_data, hist_month_label, chantiers
+
     try:
         reader = pypdf.PdfReader(pdf_file)
         full_text = ""
         for page in reader.pages:
-            full_text += page.extract_text() + "\n"
-            
-        pattern_ged = re.findall(r'KOESIO\s*([A-Za-zÀ-ÿ\s\-\diT]+?)\s*(\d[\d\s]*)\s+(\d+)\s+(\d+)\s+([\d,]+)\s*%\s*\(([\d\s]+)\)', full_text)
-        for match in pattern_ged:
+            full_text += (page.extract_text() or "") + "\n"
+
+        if not full_text.strip():
+            # PDF scanné (image) : on tente de déduire le nom de filiale/mois depuis le nom du fichier
+            fname_upper = getattr(pdf_file, "name", "").upper()
+            if "IDF" in fname_upper or "ILE DE FRANCE" in fname_upper:
+                hist_month_label = "Septembre 2026"
+            return hist_data, hist_month_label, chantiers
+
+        # 1. Détection format Rapport Groupe (lignes par filiale : KOESIO XXX VolBrut GedPure VolEpure XX,X% (YYY))
+        pattern_ged_groupe = re.findall(
+            r'KOESIO\s*([A-Za-zÀ-ÿ\s\-\diT]+?)\s*(\d[\d\s]*)\s+(\d+)\s+(\d+)\s+([\d.,]+)\s*%\s*\(([\d\s]+)\)',
+            full_text
+        )
+        for match in pattern_ged_groupe:
             name = match[0].strip().upper()
             auto_pct = float(match[4].replace(',', '.'))
             hist_data[f"KOESIO {name}"] = auto_pct
-            
-        return hist_data, chantiers
-    except Exception:
-        return hist_data, chantiers
 
-dict_hist_m1, list_chantiers_m1 = parse_pdf_history_full(file_history_input)
+        # 2. Détection format Mail Filiale Individuel (ex: "Septembre 2026 | 356 | 11.0% (44) | 36.8% (131)")
+        filiale_pdf = None
+        m_fil = re.search(r'(KOESIO\s+[A-ZÀ-Ÿ\s\-]+?|EOLE|2IT\s+SOLUTIONS)(?:\s*[-–]|\s+sur\s+la\s+période|\n)', full_text)
+        if m_fil:
+            filiale_pdf = m_fil.group(1).strip().upper()
+            if filiale_pdf == "KOESIO IDF":
+                filiale_pdf = "KOESIO ILE DE FRANCE"
+
+        pattern_mois_filiale = re.findall(
+            r'(Janvier|Février|Mars|Avril|Mai|Juin|Juillet|Août|Septembre|Octobre|Novembre|Décembre)\s+(20\d{2}).*?([\d.,]+)\s*%\s*\(\d+\)\s+([\d.,]+)\s*%\s*\(\d+\)',
+            full_text,
+            flags=re.IGNORECASE | re.DOTALL
+        )
+        if pattern_mois_filiale:
+            last_mois, last_year, _, auto_pct_str = pattern_mois_filiale[-1]
+            hist_month_label = f"{last_mois.capitalize()} {last_year}"
+            auto_val = float(auto_pct_str.replace(',', '.'))
+            if filiale_pdf:
+                hist_data[filiale_pdf] = auto_val
+            else:
+                hist_data["FILIALE_PDF"] = auto_val
+
+        return hist_data, hist_month_label, chantiers
+    except Exception:
+        return hist_data, hist_month_label, chantiers
+
+dict_hist_m1, hist_month_m1_label, list_chantiers_m1 = parse_pdf_history_full(file_history_input)
+
+def get_hist_auto_for_filiale(filiale_name, compare_dict):
+    """Recherche le taux M-1 correspondant à une filiale donnée."""
+    if not compare_dict or not filiale_name:
+        return None
+    f_up = filiale_name.upper().strip()
+    aliases = {
+        "KOESIO ILE DE FRANCE": ["KOESIO ILE DE FRANCE", "KOESIO IDF"],
+        "KOESIO NORD OUEST": ["KOESIO NORD OUEST", "KOESIO NORD-OUEST"],
+        "KOESIO NORD-OUEST": ["KOESIO NORD-OUEST", "KOESIO NORD OUEST"],
+    }
+    candidates = aliases.get(f_up, [f_up])
+    for cand in candidates:
+        if cand in compare_dict:
+            return compare_dict[cand]
+    for key_h, val_h in compare_dict.items():
+        if f_up in key_h.upper() or key_h.upper() in f_up:
+            return val_h
+    return compare_dict.get("FILIALE_PDF", None)
+
+def format_tendance_auto(pct_actuel, pct_m1, label_m1="M-1"):
+    """Formate le texte explicite de tendance (augmente / descend / stabilise) pour le mail filiale."""
+    if pct_m1 is None:
+        return f"Votre taux de rapprochement automatique s'établit à <b>{pct_actuel:.1f}%</b> ce mois-ci."
+    diff = round(pct_actuel - pct_m1, 1)
+    if diff > 0.5:
+        return (
+            f"📈 <b>En hausse (+{diff:.1f} pts vs {label_m1}) :</b> Votre taux de rapprochement automatique "
+            f"<b>augmente</b>, passant de <b>{pct_m1:.1f}%</b> à <b>{pct_actuel:.1f}%</b>."
+        )
+    elif diff < -0.5:
+        return (
+            f"📉 <b>En baisse ({diff:.1f} pts vs {label_m1}) :</b> Votre taux de rapprochement automatique "
+            f"<b>descend</b>, passant de <b>{pct_m1:.1f}%</b> à <b>{pct_actuel:.1f}%</b>."
+        )
+    else:
+        return (
+            f"➡️ <b>Stable ({diff:+.1f} pts vs {label_m1}) :</b> Votre taux de rapprochement automatique "
+            f"<b>se stabilise</b> autour de <b>{pct_actuel:.1f}%</b> (contre <b>{pct_m1:.1f}%</b> en {label_m1})."
+        )
 
 # ------------------------------------------------------------------------------
 # 6. CHARGEMENT ET DÉTECTION ROBUSTE DES FICHIERS PAR SIGNATURE ZEENDOC
@@ -172,6 +250,12 @@ def load_all_data(uploaded_files):
                 else:
                     df_isi = pd.read_csv(file, header=header_row)
                 
+                # Filtrage des lignes vides éventuelles en pied d'export Zeendoc
+                if 'Identifiant' in df_isi.columns:
+                    df_isi = df_isi[df_isi['Identifiant'].notna()].copy()
+                else:
+                    df_isi = df_isi.dropna(how='all').copy()
+                    
                 df_isi['Organisation_Zeendoc'] = entite_detectee
                 isi_list.append(df_isi)
             else:
@@ -180,6 +264,7 @@ def load_all_data(uploaded_files):
                 else:
                     df_art = pd.read_csv(file)
                 
+                df_art = df_art.dropna(how='all').copy()
                 if 'Organisation interne' in df_art.columns:
                     df_art['Organisation interne'] = df_art['Organisation interne'].replace('KOESIO AQUITAINE (EX GTO)', 'KOESIO AQUITAINE')
                     
@@ -198,14 +283,18 @@ df_isiwork, df_artis = load_all_data(all_uploaded_files)
 # ------------------------------------------------------------------------------
 # 7. DÉTECTION DYNAMIQUE DE LA FILIALE EN VISION INDIVIDUELLE
 # ------------------------------------------------------------------------------
-def detect_filiale(df_art):
+def detect_filiale(df_art, df_isi):
     if not df_art.empty and 'Organisation interne' in df_art.columns:
         filiales = df_art['Organisation interne'].dropna().unique().tolist()
         if filiales:
             return ", ".join(map(str, filiales))
+    if not df_isi.empty and 'Organisation_Zeendoc' in df_isi.columns:
+        orgs = df_isi['Organisation_Zeendoc'].dropna().unique().tolist()
+        if orgs:
+            return ", ".join(map(str, orgs))
     return "En attente de fichier..."
 
-filiale_detectee = detect_filiale(df_artis)
+filiale_detectee = detect_filiale(df_artis, df_isiwork)
 
 # ------------------------------------------------------------------------------
 # 8. FILTRAGE STRICT DES MOIS CLÔTURÉS (EXCLUSION DU MOIS EN COURS)
@@ -255,6 +344,47 @@ else:
     df_artis_filtered = df_artis
     df_isiwork_filtered = df_isiwork
 
+# ------------------------------------------------------------------------------
+# 8B. ANALYSE SUIVI PA (PLATEFORME AGRÉÉE / FACTURATION ÉLECTRONIQUE)
+# ------------------------------------------------------------------------------
+def compute_pa_metrics(df_isi):
+    """Calcule le volume PA, les doublons détectés et le Top 10 des plus gros fournisseurs PA."""
+    if df_isi.empty:
+        return 0, 0, pd.DataFrame(columns=["Rang", "Fournisseur", "Factures PA", "Dont Doublons"])
+
+    col_fe = "FE - Statut de traitement des factures"
+    if col_fe in df_isi.columns:
+        mask_pa = df_isi[col_fe].astype(str).str.contains("PA", case=False, na=False)
+    elif "Déposeur du document" in df_isi.columns:
+        mask_pa = df_isi["Déposeur du document"].astype(str).str.strip().str.upper() == "FE"
+    else:
+        return 0, 0, pd.DataFrame(columns=["Rang", "Fournisseur", "Factures PA", "Dont Doublons"])
+
+    df_pa = df_isi[mask_pa].copy()
+    nb_pa = len(df_pa)
+    if nb_pa == 0:
+        return 0, 0, pd.DataFrame(columns=["Rang", "Fournisseur", "Factures PA", "Dont Doublons"])
+
+    has_dup_col = "Statut de doublon" in df_pa.columns
+    nb_doublons = int(df_pa["Statut de doublon"].notna().sum()) if has_dup_col else 0
+
+    if "Fournisseur" in df_pa.columns:
+        top10_series = df_pa["Fournisseur"].fillna("Inconnu").value_counts().head(10)
+        rows_top10 = []
+        for idx, (fourn, cnt) in enumerate(top10_series.items(), start=1):
+            dup_f = int(df_pa[df_pa["Fournisseur"].fillna("Inconnu") == fourn]["Statut de doublon"].notna().sum()) if has_dup_col else 0
+            rows_top10.append({
+                "Rang": idx,
+                "Fournisseur": fourn,
+                "Factures PA": int(cnt),
+                "Dont Doublons": dup_f
+            })
+        df_top10_pa = pd.DataFrame(rows_top10)
+    else:
+        df_top10_pa = pd.DataFrame(columns=["Rang", "Fournisseur", "Factures PA", "Dont Doublons"])
+
+    return nb_pa, nb_doublons, df_top10_pa
+
 # Fonction d'analyse consolidée par période
 def compute_consolidation_for_period(p_period, compare_dict=None, compare_label="M-1"):
     if not df_artis.empty and 'Date' in df_artis.columns:
@@ -268,6 +398,8 @@ def compute_consolidation_for_period(p_period, compare_dict=None, compare_label=
         df_isi_p = df_isiwork
         
     filiales_g = df_art_p['Organisation interne'].dropna().unique().tolist() if 'Organisation interne' in df_art_p.columns else []
+    if not filiales_g and not df_isi_p.empty and 'Organisation_Zeendoc' in df_isi_p.columns:
+        filiales_g = df_isi_p['Organisation_Zeendoc'].dropna().unique().tolist()
     
     CORRESPONDANCE_ZEENDOC = {
         "KOESIO NORD OUEST": ["KOESIO NORD-OUEST", "KOESIO NORD OUEST", "KNO"],
@@ -291,7 +423,7 @@ def compute_consolidation_for_period(p_period, compare_dict=None, compare_label=
     dict_pct_auto_out = {}
 
     for f in filiales_g:
-        sub_art_f = df_art_p[df_art_p['Organisation interne'] == f]
+        sub_art_f = df_art_p[df_art_p['Organisation interne'] == f] if 'Organisation interne' in df_art_p.columns else pd.DataFrame()
         tot_art_f = len(sub_art_f)
         
         if tot_art_f > 0 and 'Statut' in sub_art_f.columns:
@@ -380,14 +512,10 @@ def compute_consolidation_for_period(p_period, compare_dict=None, compare_label=
         
         str_eval_auto = f"{pct_a_val:.1f}% ({auto_c_val})"
         if compare_dict:
-            comp_val = None
-            for key_h, val_h in compare_dict.items():
-                if f_name.upper() in key_h.upper() or key_h.upper() in f_name.upper():
-                    comp_val = val_h
-                    break
+            comp_val = get_hist_auto_for_filiale(f_name, compare_dict)
             if comp_val is not None:
                 delta_a = pct_a_val - comp_val
-                symb = "↗️" if delta_a > 0.05 else "↘️" if delta_a < -0.05 else "➡️"
+                symb = "↗️" if delta_a > 0.5 else "↘️" if delta_a < -0.5 else "➡️"
                 str_eval_auto += f" [{symb} {delta_a:+.1f}% vs {compare_label}]"
 
         rows_ged_groupe.append({
@@ -414,7 +542,7 @@ def compute_consolidation_for_period(p_period, compare_dict=None, compare_label=
     if compare_dict:
         tot_comp = compare_dict.get("TOTAL GROUPE CONSOLIDÉ", 36.6)
         delta_tot = pct_tot_a - tot_comp
-        symb_tot = "↗️" if delta_tot > 0.05 else "↘️" if delta_tot < -0.05 else "➡️"
+        symb_tot = "↗️" if delta_tot > 0.5 else "↘️" if delta_tot < -0.5 else "➡️"
         str_tot_auto += f" [{symb_tot} {delta_tot:+.1f}% vs {compare_label}]"
 
     rows_ged_groupe.append({
@@ -463,7 +591,7 @@ def compute_consolidation_for_period(p_period, compare_dict=None, compare_label=
     return df_ged_groupe, df_erp_groupe, dict_pct_auto_out
 
 # ------------------------------------------------------------------------------
-# 9. EXTRACTION DYNAMIQUE TOPS FOURNISSEURS
+# 9. EXTRACTION DYNAMIQUE TOPS FOURNISSEURS (VRAIS MANUELS, FAUX MANUELS & PA)
 # ------------------------------------------------------------------------------
 txt_top_vrai_html = ""
 txt_top_faux_html = ""
@@ -495,18 +623,48 @@ if not df_isiwork_filtered.empty and 'Statut de rapprochement' in df_isiwork_fil
         txt_top_faux_html = "".join([f"<li><b>{fourn}</b> : {cnt} factures</li>" for fourn, cnt in s_faux.items()])
 
 if not txt_top_vrai_html:
-    txt_top_vrai_html = "<li><b>TD SYNNEX</b></li><li><b>ACTUAL SYSTEMES</b></li><li><b>CANON FRANCE</b></li>"
+    txt_top_vrai_html = "<li>Aucun Vrai Manuel bloquant détecté</li>"
 
 if not txt_top_faux_html:
     txt_top_faux_html = "<li>Aucun Faux Manuel détecté</li>"
 
+nb_factures_pa, nb_doublons_pa, df_top10_pa = compute_pa_metrics(df_isiwork_filtered)
+
 # ------------------------------------------------------------------------------
-# 10. ONGLETS DE NAVIGATION
+# 10. STYLES CSS COMMUNS POUR LES MAILS HTML
+# ------------------------------------------------------------------------------
+MAIL_TABLE_CSS = """
+<style>
+    .content-table {
+        border-collapse: collapse;
+        margin: 10px 0;
+        font-size: 11px;
+        min-width: 100%;
+        border: 1px solid #dddddd;
+    }
+    .content-table th {
+        background-color: #0056b3;
+        color: #ffffff;
+        text-align: left;
+        padding: 6px 8px;
+    }
+    .content-table td {
+        padding: 6px 8px;
+        border: 1px solid #dddddd;
+    }
+    .content-table tr:nth-of-type(even) {
+        background-color: #f9f9f9;
+    }
+</style>
+"""
+
+# ------------------------------------------------------------------------------
+# 11. ONGLETS DE NAVIGATION
 # ------------------------------------------------------------------------------
 tab1, tab2 = st.tabs(["🏢 Vision Filiale (Rapport & Mail)", "🌍 Consolidation Groupe"])
 
 # ==============================================================================
-# ONGLET 1 : VISION FILIALE
+# ONGLET 1 : VISION FILIALE (AVEC MAIL + TENDANCE HISTORIQUE + SUIVI PA)
 # ==============================================================================
 with tab1:
     st.subheader(f"📊 Bilan de Production — {filiale_detectee}")
@@ -514,64 +672,215 @@ with tab1:
     if not df_isiwork.empty or not df_artis.empty:
         st.success(f"📅 Mois clôturés analysés : **{', '.join([f'{mois_fr.get(p.month, str(p.month))} {p.year}' for p in all_periods_p])}**")
         
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.metric("Total Factures Artis", f"{len(df_artis_filtered):,}".replace(',', ' '))
         with c2:
             st.metric("Total Factures Isiwork", f"{len(df_isiwork_filtered):,}".replace(',', ' '))
         with c3:
+            st.metric("Factures issues de PA", f"{nb_factures_pa:,}".replace(',', ' '), delta=f"{nb_doublons_pa} doublons" if nb_doublons_pa > 0 else "0 doublon", delta_color="inverse" if nb_doublons_pa > 0 else "off")
+        with c4:
             st.metric("Filiale Détectée", filiale_detectee)
             
         st.markdown("---")
         
-        # Affichage côte à côte si 2 mois
-        if len(all_periods_p) == 2:
-            p_a, p_b = all_periods_p[0], all_periods_p[1]
-            lbl_a = f"{mois_fr.get(p_a.month, str(p_a.month))} {p_a.year}"
-            lbl_b = f"{mois_fr.get(p_b.month, str(p_b.month))} {p_b.year}"
+        dict_prev_filiale = dict_hist_m1
+        label_prev_filiale = hist_month_m1_label
+        computed_filiale_months = []
+        
+        for p in all_periods_p:
+            lbl_m = f"{mois_fr.get(p.month, str(p.month))} {p.year}"
+            df_g_m, df_e_m, dict_auto_m = compute_consolidation_for_period(p, compare_dict=dict_prev_filiale, compare_label=label_prev_filiale)
             
-            df_g_a, df_e_a, _ = compute_consolidation_for_period(p_a)
-            df_g_b, df_e_b, _ = compute_consolidation_for_period(p_b)
+            # Récupération du taux auto actuel et précédent de la filiale
+            filiale_cle = filiale_detectee.split(",")[0].strip()
+            pct_auto_m = dict_auto_m.get(filiale_cle, dict_auto_m.get("TOTAL GROUPE CONSOLIDÉ", 0.0))
+            pct_auto_prev = get_hist_auto_for_filiale(filiale_cle, dict_prev_filiale)
+            tendance_txt = format_tendance_auto(pct_auto_m, pct_auto_prev, label_prev_filiale)
+            
+            computed_filiale_months.append({
+                "label": lbl_m,
+                "df_ged": df_g_m,
+                "df_erp": df_e_m,
+                "pct_auto": pct_auto_m,
+                "pct_prev": pct_auto_prev,
+                "label_prev": label_prev_filiale,
+                "tendance_html": tendance_txt
+            })
+            
+            dict_prev_filiale = dict_auto_m
+            label_prev_filiale = lbl_m
+
+        # Affichage des tableaux à l'écran
+        if len(computed_filiale_months) == 2:
+            m_a, m_b = computed_filiale_months[0], computed_filiale_months[1]
             
             st.markdown("### 📈 1. VISION GED / ISIWORK (Comparatif Côte à Côte)")
             col_g1, col_g2 = st.columns(2)
             with col_g1:
-                st.caption(f"**{lbl_a}**")
-                st.dataframe(df_g_a, hide_index=True, use_container_width=True)
+                st.caption(f"**{m_a['label']}**")
+                st.dataframe(m_a['df_ged'], hide_index=True, use_container_width=True)
             with col_g2:
-                st.caption(f"**{lbl_b}**")
-                st.dataframe(df_g_b, hide_index=True, use_container_width=True)
+                st.caption(f"**{m_b['label']}**")
+                st.dataframe(m_b['df_ged'], hide_index=True, use_container_width=True)
                 
             st.markdown("### 💻 2. VISION ERP ARTIS (Comparatif Côte à Côte)")
             col_e1, col_e2 = st.columns(2)
             with col_e1:
-                st.caption(f"**{lbl_a}**")
-                st.dataframe(df_e_a, hide_index=True, use_container_width=True)
+                st.caption(f"**{m_a['label']}**")
+                st.dataframe(m_a['df_erp'], hide_index=True, use_container_width=True)
             with col_e2:
-                st.caption(f"**{lbl_b}**")
-                st.dataframe(df_e_b, hide_index=True, use_container_width=True)
+                st.caption(f"**{m_b['label']}**")
+                st.dataframe(m_b['df_erp'], hide_index=True, use_container_width=True)
+                
+            t_ged_f1 = m_a['df_ged'].to_html(index=False, border=1, classes='content-table')
+            t_ged_f2 = m_b['df_ged'].to_html(index=False, border=1, classes='content-table')
+            t_erp_f1 = m_a['df_erp'].to_html(index=False, border=1, classes='content-table')
+            t_erp_f2 = m_b['df_erp'].to_html(index=False, border=1, classes='content-table')
+            
+            tables_filiale_mail_html = f"""
+            <h3 style="color: #0056b3; margin-top: 20px;">📈 1. VISION GED / ISIWORK ({m_a['label']} vs {m_b['label']})</h3>
+            <table width="100%" border="0" cellspacing="10" cellpadding="0" style="table-layout: fixed;">
+                <tr>
+                    <td valign="top" width="50%">
+                        <h4 style="color: #333; margin-bottom: 5px;">📅 {m_a['label']}</h4>
+                        {t_ged_f1}
+                    </td>
+                    <td valign="top" width="50%">
+                        <h4 style="color: #333; margin-bottom: 5px;">📅 {m_b['label']}</h4>
+                        {t_ged_f2}
+                    </td>
+                </tr>
+            </table>
+            <p style="margin-top: 8px;">{m_b['tendance_html']}</p>
+            
+            <h3 style="color: #0056b3; margin-top: 25px;">💻 2. VISION ERP ARTIS ({m_a['label']} vs {m_b['label']})</h3>
+            <table width="100%" border="0" cellspacing="10" cellpadding="0" style="table-layout: fixed;">
+                <tr>
+                    <td valign="top" width="50%">
+                        <h4 style="color: #333; margin-bottom: 5px;">📅 {m_a['label']}</h4>
+                        {t_erp_f1}
+                    </td>
+                    <td valign="top" width="50%">
+                        <h4 style="color: #333; margin-bottom: 5px;">📅 {m_b['label']}</h4>
+                        {t_erp_f2}
+                    </td>
+                </tr>
+            </table>
+            """
         else:
-            for p in all_periods_p:
-                lbl_m = f"{mois_fr.get(p.month, str(p.month))} {p.year}"
-                df_g_m, df_e_m, _ = compute_consolidation_for_period(p)
-                st.markdown(f"### 📈 1. VISION GED / ISIWORK — {lbl_m}")
-                st.dataframe(df_g_m, hide_index=True, use_container_width=True)
-                st.markdown(f"### 💻 2. VISION ERP ARTIS — {lbl_m}")
-                st.dataframe(df_e_m, hide_index=True, use_container_width=True)
-                st.markdown("---")
+            m_single = computed_filiale_months[0]
+            st.markdown(f"### 📈 1. VISION GED / ISIWORK — {m_single['label']}")
+            st.dataframe(m_single['df_ged'], hide_index=True, use_container_width=True)
+            st.info(m_single['tendance_html'].replace("<b>", "**").replace("</b>", "**"))
+            
+            st.markdown(f"### 💻 2. VISION ERP ARTIS — {m_single['label']}")
+            st.dataframe(m_single['df_erp'], hide_index=True, use_container_width=True)
+            
+            t_ged_single = m_single['df_ged'].to_html(index=False, border=1, classes='content-table')
+            t_erp_single = m_single['df_erp'].to_html(index=False, border=1, classes='content-table')
+            
+            tables_filiale_mail_html = f"""
+            <h3 style="color: #0056b3; margin-top: 20px;">📈 1. VISION GED / ISIWORK — {m_single['label']}</h3>
+            {t_ged_single}
+            <p style="margin-top: 8px;">{m_single['tendance_html']}</p>
+            
+            <h3 style="color: #0056b3; margin-top: 25px;">💻 2. VISION ERP ARTIS — {m_single['label']}</h3>
+            {t_erp_single}
+            """
+
+        # Affichage à l'écran de la nouvelle section 5 - Suivi PA
+        st.markdown("---")
+        st.markdown(f"### 📨 5. SUIVI PA (Plateforme Agréée) — {periode_globale}")
+        if nb_doublons_pa > 0:
+            st.warning(f"⚠️ **Attention à vos doublons :** Vous avez désormais **{nb_factures_pa} factures issues de la PA**, dont **{nb_doublons_pa} doublons détectés** (`Doublon sur index`).")
+        else:
+            st.info(f"ℹ️ Vous avez désormais **{nb_factures_pa} factures issues de la PA** ce mois-ci (aucun doublon détecté).")
+            
+        if not df_top10_pa.empty:
+            st.caption("**Top 10 des plus gros fournisseurs issus de la PA :**")
+            st.dataframe(df_top10_pa, hide_index=True, use_container_width=True)
+            top10_pa_list_html = "".join([
+                f"<li><b>{row['Fournisseur']}</b> : {row['Factures PA']} factures" + (f" <i>(dont {row['Dont Doublons']} doublons)</i>" if row['Dont Doublons'] > 0 else "") + "</li>"
+                for _, row in df_top10_pa.iterrows()
+            ])
+        else:
+            top10_pa_list_html = "<li>Aucune facture issue de la PA sur cette période.</li>"
+
+        alerte_pa_html = (
+            f"⚠️ <b>Attention à vos doublons :</b> vous avez désormais <b>{nb_factures_pa} factures issues de la PA</b> "
+            f"(dont <b>{nb_doublons_pa} doublon(s) détecté(s)</b>)."
+            if nb_doublons_pa > 0
+            else f"Vous avez désormais <b>{nb_factures_pa} factures issues de la PA</b> sur cette période."
+        )
+
+        # Rétablissement du Mail Filiale complet (sections 1 à 5)
+        st.markdown("---")
+        st.markdown(f"### ✉️ Modèle de Mail Filiale — {filiale_detectee} (Prêt à copier pour Outlook)")
+        
+        txt_chantiers_filiale_html = "".join([f"<li>{c}</li>" for c in list_chantiers_m1])
+        
+        mail_filiale_html = f"""
+        {MAIL_TABLE_CSS}
+        <div style="font-family: Arial, sans-serif; font-size: 13px; color: #222; line-height: 1.5; padding: 14px; background-color: #ffffff; border-radius: 6px; border: 1px solid #e0e0e0;">
+            <p><b>Objet :</b> Analyse de Production {filiale_detectee} - Statistiques et Performance de Rapprochement - {periode_globale}</p>
+            <hr style="border: 0; border-top: 1px solid #eee; margin: 10px 0;">
+            
+            <p>Bonjour à tous,</p>
+            
+            <p>Vous trouverez ci-dessous l'analyse détaillée des performances du flux de rapprochement automatique des factures fournisseurs pour <b>{filiale_detectee}</b>, consolidée sur la période de <b>{periode_globale}</b>.</p>
+            
+            <p>Conformément aux directives du Groupe, nous appliquons la méthodologie d'isolation des flux <b>« GED Pure / FAF Artis »</b> (factures d'archivage directement traitées de bout en bout dans l'ERP sans rapprochement en GED) afin de refléter l'efficacité machine réelle d'Isiwork.</p>
+            
+            {tables_filiale_mail_html}
+            
+            <p style="font-size: 11px; color: #555; margin-top: 8px;">
+                <i>Légende des états : <b>Rapprochement Auto</b> = Factures rapprochées à 100 % automatiquement ; <b>Faux Manuel</b> = Marchandises conformes mais forçage manuel pour frais annexes (port, DEEE) ; <b>Vrai Manuel</b> = Écarts de prix ou quantités ; <b>Flux GED Pure</b> = Pièces saisies directement dans l'ERP.</i>
+            </p>
+            
+            <h3 style="color: #0056b3; margin-top: 22px;">🔍 3. FOCUS ACTIONS — Analyse des "Vrais Manuels" & Frictions</h3>
+            <p><b>• Top 5 Fournisseurs bloquants (Écarts prix/réf — Vrais Manuels) :</b></p>
+            <ul>
+                {txt_top_vrai_html}
+            </ul>
+            <p><b>• Top 5 Faux Manuels (Frais de port et frais annexes isolés) :</b></p>
+            <ul>
+                {txt_top_faux_html}
+            </ul>
+            
+            <h3 style="color: #0056b3; margin-top: 22px;">⚙️ 4. SUIVI DES CHANTIERS TECHNIQUES & PERSPECTIVES</h3>
+            <ul>
+                {txt_chantiers_filiale_html}
+            </ul>
+            
+            <h3 style="color: #0056b3; margin-top: 22px;">📨 5. SUIVI PA (Facturation Électronique)</h3>
+            <p>{alerte_pa_html}</p>
+            <p><b>• Top 10 des plus gros fournisseurs issus de la PA :</b></p>
+            <ol>
+                {top10_pa_list_html}
+            </ol>
+            
+            <p style="margin-top: 16px;">Cordialement,</p>
+            <p><b>Louise BRUN</b><br>
+            Chef de projet pour KOESIO GROUPE & KAM<br>
+            Potentiale</p>
+        </div>
+        """
+        
+        st.components.v1.html(mail_filiale_html, height=1350, scrolling=True)
             
     else:
         st.warning("👈 Veuillez déposer vos fichiers d'export **Isiwork/Zeendoc** et **Artis** dans le panneau latéral.")
 
 # ==============================================================================
-# ONGLET 2 : CONSOLIDATION GROUPE (AOÛT ET SEPTEMBRE CÔTE À CÔTE)
+# ONGLET 2 : CONSOLIDATION GROUPE
 # ==============================================================================
 with tab2:
     st.subheader("🌍 Consolidation Inter-Filiales — Groupe Koesio")
     
     if all_periods_p:
         dict_prev_month = dict_hist_m1
-        label_prev_month = "M-1 (Juillet)"
+        label_prev_month = hist_month_m1_label
         
         computed_months = []
         
@@ -589,7 +898,7 @@ with tab2:
             dict_prev_month = dict_auto_p
             label_prev_month = lbl_m
             
-        # AFFICHAGE CÔTE À CÔTE SI 2 MOIS (AOÛT ET SEPTEMBRE)
+        # AFFICHAGE CÔTE À CÔTE SI 2 MOIS
         if len(computed_months) == 2:
             m1, m2 = computed_months[0], computed_months[1]
             
@@ -673,7 +982,19 @@ with tab2:
         
         txt_chantiers_html = "".join([f"<li>{c}</li>" for c in list_chantiers_m1])
         
+        alerte_pa_groupe_html = (
+            f"⚠️ <b>Attention à vos doublons :</b> vous avez désormais <b>{nb_factures_pa} factures issues de la PA</b> "
+            f"(dont <b>{nb_doublons_pa} doublon(s) détecté(s)</b>)."
+            if nb_doublons_pa > 0
+            else f"Vous avez désormais <b>{nb_factures_pa} factures issues de la PA</b> sur cette période."
+        )
+        top10_pa_groupe_html = "".join([
+            f"<li><b>{row['Fournisseur']}</b> : {row['Factures PA']} factures" + (f" <i>(dont {row['Dont Doublons']} doublons)</i>" if row['Dont Doublons'] > 0 else "") + "</li>"
+            for _, row in df_top10_pa.iterrows()
+        ]) if not df_top10_pa.empty else "<li>Aucune facture issue de la PA sur cette période.</li>"
+        
         mail_groupe_html = f"""
+        {MAIL_TABLE_CSS}
         <div style="font-family: Arial, sans-serif; font-size: 13px; color: #222; line-height: 1.5; padding: 10px; background-color: #ffffff; border-radius: 5px;">
             <p>Bonjour à tous,</p>
             
@@ -695,6 +1016,13 @@ with tab2:
                 {txt_chantiers_html}
             </ul>
             
+            <h3 style="color: #0056b3; margin-top: 20px;">📨 5. SUIVI PA (Facturation Électronique)</h3>
+            <p>{alerte_pa_groupe_html}</p>
+            <p><b>• Top 10 des plus gros fournisseurs issus de la PA :</b></p>
+            <ol>
+                {top10_pa_groupe_html}
+            </ol>
+            
             <p>Cordialement,</p>
             <p><b>Louise BRUN</b><br>
             Chef de projet pour KOESIO GROUPE & KAM<br>
@@ -702,32 +1030,7 @@ with tab2:
         </div>
         """
         
-        st.markdown("""
-        <style>
-            .content-table {
-                border-collapse: collapse;
-                margin: 10px 0;
-                font-size: 11px;
-                min-width: 100%;
-                border: 1px solid #dddddd;
-            }
-            .content-table th {
-                background-color: #0056b3;
-                color: #ffffff;
-                text-align: left;
-                padding: 6px 8px;
-            }
-            .content-table td {
-                padding: 6px 8px;
-                border: 1px solid #dddddd;
-            }
-            .content-table tr:nth-of-type(even) {
-                background-color: #f9f9f9;
-            }
-        </style>
-        """, unsafe_allow_html=True)
-        
-        st.components.v1.html(mail_groupe_html, height=1300, scrolling=True)
+        st.components.v1.html(mail_groupe_html, height=1450, scrolling=True)
         
     else:
         st.warning("👈 Téléversez les fichiers de vos différentes filiales dans la barre latérale pour afficher la consolidation groupe.")
