@@ -95,13 +95,13 @@ files_artis_input = st.sidebar.file_uploader(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.header("📜 Historique M-1 (PDF Mail Passé)")
+st.sidebar.header("📜 Historique M-1 (Fichier Excel Maître)")
 file_history_input = st.sidebar.file_uploader(
-    "Rapport(s) / Mail(s) PDF M-1 (.pdf)",
-    type=["pdf", "eml", "txt", "html"],
+    "Fichier Historique Excel (.xlsx, .csv) ou Mail (.pdf, .eml)",
+    type=["xlsx", "csv", "pdf", "eml", "txt", "html"],
     accept_multiple_files=True,
     key=f"hist_{u_key}",
-    help="Téléversez le(s) mail(s) PDF du mois précédent (un ou plusieurs mails filiales, ou le rapport groupe)."
+    help="Téléversez votre fichier maître GRIFF_Historique_Koesio.xlsx (recommandé) ou vos mails historiques."
 )
 pasted_history_text = st.sidebar.text_area(
     "Ou collez le texte du mail M-1 (optionnel)",
@@ -415,10 +415,106 @@ def parse_single_history_text(full_text):
     return local_hist, local_label, local_chantiers
 
 
+def parse_excel_history(file_obj, target_m1_period=None):
+    """Lit l'onglet Historique_Mensuel du fichier Excel et extrait UNIQUEMENT le mois M-1 (relatif au mois analysé)."""
+    import io
+    raw_bytes = file_obj.getvalue()
+    fname = getattr(file_obj, "name", "").lower()
+    if fname.endswith(".xlsx"):
+        xl = pd.ExcelFile(io.BytesIO(raw_bytes))
+        sheet_to_read = "Historique_Mensuel" if "Historique_Mensuel" in xl.sheet_names else xl.sheet_names[0]
+        # Détection automatique de la ligne d'en-tête ("Filiale Groupe")
+        df_raw = pd.read_excel(io.BytesIO(raw_bytes), sheet_name=sheet_to_read, header=None, nrows=10)
+        hdr_idx = 0
+        for r_i, row in df_raw.iterrows():
+            if any("Filiale" in str(v) for v in row.values if pd.notna(v)):
+                hdr_idx = r_i
+                break
+        df_h = pd.read_excel(io.BytesIO(raw_bytes), sheet_name=sheet_to_read, header=hdr_idx)
+    else:
+        df_h = pd.read_csv(io.BytesIO(raw_bytes))
+
+    df_h = df_h.dropna(how="all").copy()
+    if "Filiale Groupe" not in df_h.columns:
+        return {}, None
+
+    df_h = df_h[df_h["Filiale Groupe"].notna()].copy()
+    df_h["Filiale_Canon"] = df_h["Filiale Groupe"].apply(canonicalize_filiale)
+
+    # Identification de la période la plus récente dans le fichier historique
+    mois_map_inv = {
+        "janvier": 1, "février": 2, "fevrier": 2, "mars": 3, "avril": 4,
+        "mai": 5, "juin": 6, "juillet": 7, "août": 8, "aout": 8,
+        "septembre": 9, "octobre": 10, "novembre": 11, "décembre": 12, "decembre": 12
+    }
+    num_to_mois_fr = {
+        1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 5: "Mai", 6: "Juin",
+        7: "Juillet", 8: "Août", 9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre"
+    }
+
+    # Construction d'une colonne normalisée YYYY-MM pour filtrer strictement M-1
+    if "Période (YYYY-MM)" in df_h.columns and df_h["Période (YYYY-MM)"].notna().any():
+        df_h["_per_sort"] = df_h["Période (YYYY-MM)"].astype(str).str.strip().str[:7]
+    elif "Mois" in df_h.columns and "Année" in df_h.columns:
+        m_num_s = df_h["Mois"].astype(str).str.strip().str.lower().map(mois_map_inv).fillna(0).astype(int)
+        y_num_s = pd.to_numeric(df_h["Année"], errors="coerce").fillna(0).astype(int)
+        df_h["_per_sort"] = [f"{y:04d}-{m:02d}" if (y > 0 and m > 0) else "" for y, m in zip(y_num_s, m_num_s)]
+    else:
+        df_h["_per_sort"] = ""
+
+    valid_pers = sorted([p for p in df_h["_per_sort"].dropna().unique() if len(p) == 7])
+    if valid_pers:
+        if target_m1_period is not None:
+            m1_str = str(target_m1_period)  # ex: "2026-09" si mois analysé = 2026-10
+            if m1_str in valid_pers:
+                chosen_per = m1_str
+            else:
+                # Dernier mois disponible strictement antérieur au mois analysé (<= M-1)
+                earlier_pers = [p for p in valid_pers if p <= m1_str]
+                chosen_per = earlier_pers[-1] if earlier_pers else valid_pers[-1]
+        else:
+            chosen_per = valid_pers[-1]
+
+        df_latest = df_h[df_h["_per_sort"] == chosen_per].copy()
+        try:
+            y_p, m_p = chosen_per.split("-")
+            lbl_out = f"{num_to_mois_fr[int(m_p)]} {int(y_p)}"
+        except Exception:
+            lbl_out = chosen_per
+    else:
+        df_latest = df_h.copy()
+        lbl_out = "M-1"
+
+    # Recherche de la colonne Taux Rapprochement Auto (%)
+    col_taux_auto = None
+    for c in df_latest.columns:
+        if "taux" in str(c).lower() and "auto" in str(c).lower() and "artis" not in str(c).lower():
+            col_taux_auto = c
+            break
+    if col_taux_auto is None:
+        return {}, None
+
+    out_dict = {}
+    for _, r in df_latest.iterrows():
+        fn = r["Filiale_Canon"]
+        val = pd.to_numeric(r[col_taux_auto], errors="coerce")
+        if pd.notna(val) and fn and fn != "Inconnue":
+            out_dict[fn] = float(val)
+
+    # Calcul exact du taux consolidé Groupe M-1 pondéré par Vol. Épuré GED si disponible
+    if "Nb Auto GED" in df_latest.columns and "Vol. Épuré GED" in df_latest.columns:
+        tot_auto_m1 = pd.to_numeric(df_latest["Nb Auto GED"], errors="coerce").sum()
+        tot_epure_m1 = pd.to_numeric(df_latest["Vol. Épuré GED"], errors="coerce").sum()
+        if tot_epure_m1 > 0:
+            out_dict["TOTAL GROUPE CONSOLIDÉ"] = round(float(tot_auto_m1 / tot_epure_m1 * 100), 1)
+
+    return out_dict, lbl_out
+
+
 @st.cache_data
-def parse_pdf_history_full(pdf_files, pasted_text=""):
+def parse_pdf_history_full(pdf_files, pasted_text="", target_m1_period=None):
     """
-    Parse un ou plusieurs PDF historiques (mails filiales individuels ou rapport groupe) ainsi que le texte collé.
+    Parse le fichier Excel maître GRIFF_Historique_Koesio.xlsx (prioritaire) ou un/plusieurs PDF/mails historiques.
     """
     hist_data = {}
     hist_month_label = "M-1"
@@ -433,6 +529,15 @@ def parse_pdf_history_full(pdf_files, pasted_text=""):
 
     for pf in files_list:
         fname_low = getattr(pf, "name", "").lower()
+        if fname_low.endswith((".xlsx", ".csv")):
+            try:
+                h_xl, lbl_xl = parse_excel_history(pf, target_m1_period=target_m1_period)
+                hist_data.update(h_xl)
+                if lbl_xl:
+                    labels_found.append(lbl_xl)
+            except Exception as e:
+                st.sidebar.error(f"Erreur lecture historique Excel : {e}")
+            continue
         if fname_low.endswith((".eml", ".txt", ".html")):
             raw_bytes = pf.getvalue()
             try:
@@ -487,8 +592,6 @@ def parse_pdf_history_full(pdf_files, pasted_text=""):
         parse_status = "empty_match"
 
     return hist_data, hist_month_label, chantiers, parse_status
-
-dict_hist_m1, hist_month_m1_label, list_chantiers_m1, pdf_parse_status = parse_pdf_history_full(file_history_input, pasted_history_text)
 
 def get_hist_auto_for_filiale(filiale_name, compare_dict):
     """Recherche le taux M-1 extrait du PDF pour une filiale donnée (sans valeur en dur)."""
@@ -626,6 +729,10 @@ def get_closed_periods(df_art, df_isi):
     return closed_periods if closed_periods else all_periods
 
 all_periods_p = get_closed_periods(df_artis, df_isiwork)
+target_m1_p = (all_periods_p[0] - 1) if all_periods_p else None
+dict_hist_m1, hist_month_m1_label, list_chantiers_m1, pdf_parse_status = parse_pdf_history_full(
+    file_history_input, pasted_history_text, target_m1_period=target_m1_p
+)
 
 if all_periods_p:
     if len(all_periods_p) == 1:
@@ -968,6 +1075,107 @@ if file_history_input or (pasted_history_text and pasted_history_text.strip()):
         st.sidebar.warning("⚠️ PDF image détecté sans moteur OCR actif : vérifiez `requirements.txt` (`pymupdf` + `rapidocr-onnxruntime`) ou collez le texte du mail ci-dessus.")
     else:
         st.sidebar.warning("⚠️ Aucun taux historique n'a pu être extrait de ce PDF.")
+
+
+def build_monthly_history_export_excel(all_periods_list):
+    """Génère un fichier Excel prêt à copier-coller dans GRIFF_Historique_Koesio.xlsx pour le(s) mois analysé(s)."""
+    import io
+    rows_out = []
+    for p_per in all_periods_list:
+        m_name = mois_fr.get(p_per.month, str(p_per.month))
+        y_num = p_per.year
+        per_str = f"{y_num}-{p_per.month:02d}"
+
+        df_art_p = df_artis[pd.to_datetime(df_artis['Date'], errors='coerce').dt.to_period('M') == p_per] if (not df_artis.empty and 'Date' in df_artis.columns) else df_artis
+        df_isi_p = df_isiwork[pd.to_datetime(df_isiwork['Date facture'], errors='coerce').dt.to_period('M') == p_per] if (not df_isiwork.empty and 'Date facture' in df_isiwork.columns) else df_isiwork
+
+        f_art_l = df_art_p['Organisation interne'].dropna().unique().tolist() if 'Organisation interne' in df_art_p.columns else []
+        f_isi_l = df_isi_p['Filiale_Canonique'].dropna().unique().tolist() if 'Filiale_Canonique' in df_isi_p.columns else []
+        fils = sorted(list(set(f_art_l + f_isi_l)))
+
+        for fn in fils:
+            sub_a = df_art_p[df_art_p['Organisation interne'] == fn] if 'Organisation interne' in df_art_p.columns else pd.DataFrame()
+            tot_a = len(sub_a)
+            batch_c = len(sub_a[sub_a['Statut'].notna() & (sub_a['Statut'] != '')]) if (tot_a > 0 and 'Statut' in sub_a.columns) else 0
+            man_a = tot_a - batch_c
+            pct_ba = round(batch_c / tot_a * 100, 1) if tot_a > 0 else 0.0
+            pct_ma = round(man_a / tot_a * 100, 1) if tot_a > 0 else 0.0
+
+            if 'Organisation_Zeendoc' in df_isi_p.columns:
+                termes = CORRESPONDANCE_ZEENDOC.get(fn, [fn])
+                mask_i = df_isi_p['Organisation_Zeendoc'].astype(str).str.upper().apply(lambda x: any(t.upper() in x for t in termes))
+                sub_i = df_isi_p[mask_i].copy()
+            else:
+                sub_i = pd.DataFrame()
+
+            vol_b = len(sub_i)
+            if vol_b > 0 and 'Statut de rapprochement' in sub_i.columns:
+                auto_c = len(sub_i[sub_i['Statut de rapprochement'] == 'Rapproché automatiquement'])
+                not_auto = sub_i['Statut de rapprochement'] != 'Rapproché automatiquement'
+                notes_s = sub_i['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in sub_i.columns else pd.Series('', index=sub_i.index)
+                exp_s = sub_i['Date export ERP'].fillna('').astype(str) if 'Date export ERP' in sub_i.columns else pd.Series('', index=sub_i.index)
+                is_faf = notes_s.str.contains('FAF|TRAIT|ARTIS|ARCHIV|DÉJÀ TRAITÉ', case=False, regex=True) | exp_s.str.contains('FAF|TRAIT|ARTIS|ARCHIV|DÉJÀ TRAITÉ', case=False, regex=True) | sub_i['Statut de rapprochement'].isna()
+                ged_p = int((not_auto & is_faf).sum())
+                vol_ep = max(0, vol_b - ged_p)
+                sub_ep = sub_i[~(not_auto & is_faf)].copy()
+                df_m = sub_ep[sub_ep['Statut de rapprochement'].str.contains('manuellement', case=False, na=False)].copy()
+                n_m = df_m['Tampons / Notes / Conversations'].fillna('').astype(str) if 'Tampons / Notes / Conversations' in df_m.columns else pd.Series('', index=df_m.index)
+                faux_c = len(df_m[n_m.str.contains('FRAIS|PORT|D3EE|DEEE', case=False, regex=True)]) if not df_m.empty else 0
+                vrai_c = max(0, len(df_m) - faux_c)
+                att_c = max(0, vol_ep - (auto_c + faux_c + vrai_c))
+            else:
+                auto_c, ged_p, vol_ep, faux_c, vrai_c, att_c = 0, 0, 0, 0, 0, 0
+
+            pa_cnt, pa_dup, _ = compute_pa_metrics(sub_i)
+            denom = vol_ep if vol_ep > 0 else 1
+            pct_a = round(auto_c / denom * 100, 1) if vol_ep > 0 else 0.0
+            pct_f = round(faux_c / denom * 100, 1) if vol_ep > 0 else 0.0
+            pct_v = round(vrai_c / denom * 100, 1) if vol_ep > 0 else 0.0
+            pct_att = round(att_c / denom * 100, 1) if vol_ep > 0 else 0.0
+
+            rows_out.append({
+                "Mois": m_name,
+                "Année": y_num,
+                "Période (YYYY-MM)": per_str,
+                "Filiale Groupe": fn,
+                "Vol. Brut GED": vol_b,
+                "Flux GED Pure": ged_p,
+                "Vol. Épuré GED": vol_ep,
+                "Nb Auto GED": auto_c,
+                "Taux Rapprochement Auto (%)": pct_a,
+                "Nb Faux Manuel": faux_c,
+                "Taux Faux Manuel (%)": pct_f,
+                "Nb Vrai Manuel": vrai_c,
+                "Taux Vrai Manuel (%)": pct_v,
+                "Nb En Attente": att_c,
+                "Taux En Attente (%)": pct_att,
+                "Potentiel Cible (%)": round(pct_a + pct_f, 1),
+                "Total Pièces Artis": tot_a,
+                "Nb Batch Auto Artis": batch_c,
+                "Taux Batch Auto Artis (%)": pct_ba,
+                "Nb Manuel Artis": man_a,
+                "Taux Manuel Artis (%)": pct_ma,
+                "Factures PA": pa_cnt,
+                "Doublons PA": pa_dup
+            })
+
+    df_exp = pd.DataFrame(rows_out)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df_exp.to_excel(writer, index=False, sheet_name="Nouvelles_Lignes_Historique")
+    return buf.getvalue()
+
+if all_periods_p and (not df_isiwork.empty or not df_artis.empty):
+    st.sidebar.markdown("---")
+    st.sidebar.header("💾 Alimenter l'Historique Excel")
+    st.sidebar.download_button(
+        label="📥 Exporter les lignes du mois (.xlsx)",
+        data=build_monthly_history_export_excel(all_periods_p),
+        file_name=f"Export_Historique_GRIFF_{all_periods_p[-1]}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        help="Téléchargez les lignes du mois analysé pour les copier-coller à la suite de votre fichier maître GRIFF_Historique_Koesio.xlsx."
+    )
 
 # ------------------------------------------------------------------------------
 # 11. ONGLETS DE NAVIGATION
