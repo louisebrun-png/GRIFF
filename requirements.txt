@@ -1,5 +1,6 @@
 streamlit
 pandas
 openpyxl
-plotly
-tabulate
+pypdf
+pymupdf
+rapidocr-onnxruntime
