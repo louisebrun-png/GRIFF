@@ -98,7 +98,7 @@ st.sidebar.markdown("---")
 st.sidebar.header("📜 Historique M-1 (PDF Mail Passé)")
 file_history_input = st.sidebar.file_uploader(
     "Rapport(s) / Mail(s) PDF M-1 (.pdf)",
-    type=["pdf"],
+    type=["pdf", "eml", "txt", "html"],
     accept_multiple_files=True,
     key=f"hist_{u_key}",
     help="Téléversez le(s) mail(s) PDF du mois précédent (un ou plusieurs mails filiales, ou le rapport groupe)."
@@ -182,19 +182,19 @@ def canonicalize_filiale(raw_name):
 # 5B. LECTURE DYNAMIQUE DE L'HISTORIQUE M-1 DEPUIS LE MAIL PDF (AUCUNE VALEUR EN DUR)
 # ------------------------------------------------------------------------------
 def extract_text_from_pdf(pdf_file):
-    """Extrait le texte d'un PDF via pypdf, pdfplumber, PyMuPDF ou OCR fallback."""
+    """Extrait le texte d'un PDF via pypdf, pdfplumber, PyMuPDF ou OCR (PyMuPDF+Tesseract / RapidOCR) sur les 2 premières pages."""
     if pdf_file is None:
         return "", False
 
     pdf_bytes = pdf_file.getvalue()
     text_out = ""
 
-    # 1. pypdf
+    # 1. pypdf (2 premières pages)
     if HAS_PYPDF:
         try:
             import io
             reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
-            text_out = "\n".join((p.extract_text() or "") for p in reader.pages)
+            text_out = "\n".join((p.extract_text() or "") for p in reader.pages[:2])
         except Exception:
             text_out = ""
 
@@ -203,7 +203,7 @@ def extract_text_from_pdf(pdf_file):
         try:
             import io
             with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                text_out = "\n".join((p.extract_text() or "") for p in pdf.pages)
+                text_out = "\n".join((p.extract_text() or "") for p in pdf.pages[:2])
         except Exception:
             pass
 
@@ -211,32 +211,52 @@ def extract_text_from_pdf(pdf_file):
     if not text_out.strip() and HAS_PYMUPDF:
         try:
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            text_out = "\n".join((page.get_text("text") or "") for page in doc)
+            text_out = "\n".join((page.get_text("text") or "") for page in doc[:2])
         except Exception:
             pass
 
-    # 4. OCR automatique (RapidOCR pure-Python ou Tesseract) si PDF imprimé en mode image (Chrome/Gmail)
+    # 4. OCR rapide sur les 2 premières pages uniquement (économie RAM + vitesse x4 sur Streamlit Cloud)
     is_image_only = False
     if not text_out.strip():
         is_image_only = True
-        if HAS_RAPIDOCR and HAS_PYMUPDF:
+        # 4a. PyMuPDF + Tesseract (système Linux via packages.txt : tesseract-ocr + tesseract-ocr-fra)
+        if HAS_PYMUPDF:
+            try:
+                import pytesseract
+                from PIL import Image
+                import io
+                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                ocr_texts = []
+                for page in doc[:2]:
+                    pix = page.get_pixmap(dpi=150)
+                    img = Image.open(io.BytesIO(pix.tobytes("png")))
+                    try:
+                        txt_p = pytesseract.image_to_string(img, lang="fra")
+                    except Exception:
+                        txt_p = pytesseract.image_to_string(img)
+                    ocr_texts.append(txt_p)
+                text_out = "\n".join(ocr_texts)
+            except Exception:
+                pass
+        # 4b. RapidOCR + PyMuPDF fallback
+        if not text_out.strip() and HAS_RAPIDOCR and HAS_PYMUPDF:
             try:
                 ocr_engine = RapidOCR()
                 doc = fitz.open(stream=pdf_bytes, filetype="pdf")
                 ocr_lines = []
-                for page in doc:
-                    pix = page.get_pixmap(dpi=200)
-                    img_bytes = pix.tobytes("png")
-                    result, _ = ocr_engine(img_bytes)
+                for page in doc[:2]:
+                    pix = page.get_pixmap(dpi=150)
+                    result, _ = ocr_engine(pix.tobytes("png"))
                     if result:
                         ocr_lines.append("\n".join([item[1] for item in result]))
                 text_out = "\n".join(ocr_lines)
             except Exception:
                 pass
+        # 4c. pdf2image + Tesseract fallback
         if not text_out.strip() and HAS_OCR:
             try:
-                images = convert_from_bytes(pdf_bytes, dpi=200)
-                ocr_texts = [pytesseract.image_to_string(img, lang="fra") for img in images]
+                images = convert_from_bytes(pdf_bytes, dpi=150, first_page=1, last_page=2)
+                ocr_texts = [pytesseract.image_to_string(img) for img in images]
                 text_out = "\n".join(ocr_texts)
             except Exception:
                 pass
@@ -412,7 +432,31 @@ def parse_pdf_history_full(pdf_files, pasted_text=""):
     labels_found = []
 
     for pf in files_list:
-        txt, is_img = extract_text_from_pdf(pf)
+        fname_low = getattr(pf, "name", "").lower()
+        if fname_low.endswith((".eml", ".txt", ".html")):
+            raw_bytes = pf.getvalue()
+            try:
+                txt = raw_bytes.decode("utf-8")
+            except Exception:
+                txt = raw_bytes.decode("latin-1", errors="ignore")
+            if fname_low.endswith(".eml"):
+                import email
+                from bs4 import BeautifulSoup
+                msg = email.message_from_string(txt)
+                parts_txt = []
+                for part in msg.walk():
+                    ctype = part.get_content_type()
+                    if ctype in ("text/plain", "text/html"):
+                        payload = part.get_payload(decode=True)
+                        if payload:
+                            decoded = payload.decode(part.get_content_charset() or "utf-8", errors="ignore")
+                            if ctype == "text/html":
+                                decoded = BeautifulSoup(decoded, "html.parser").get_text(" ")
+                            parts_txt.append(decoded)
+                txt = "\n".join(parts_txt) if parts_txt else txt
+            is_img = False
+        else:
+            txt, is_img = extract_text_from_pdf(pf)
         if not txt.strip():
             if is_img:
                 any_image_only = True
