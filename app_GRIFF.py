@@ -1,6 +1,6 @@
 # ==============================================================================
 # APPLICATION : GRIFF — Tour de Contrôle Koesio
-# DESCRIPTION : Analyse mensuelle, historique M-1, suivi PA et génération de mails
+# DESCRIPTION : Analyse mensuelle, historique M-1 (PDF), suivi PA et génération de mails
 # AUTEUR      : Louise BRUN - Koesio Groupe
 # ==============================================================================
 
@@ -14,6 +14,25 @@ try:
     HAS_PYPDF = True
 except ImportError:
     HAS_PYPDF = False
+
+try:
+    import pdfplumber
+    HAS_PDFPLUMBER = True
+except ImportError:
+    HAS_PDFPLUMBER = False
+
+try:
+    import fitz  # PyMuPDF
+    HAS_PYMUPDF = True
+except ImportError:
+    HAS_PYMUPDF = False
+
+try:
+    import pytesseract
+    from pdf2image import convert_from_bytes
+    HAS_OCR = True
+except ImportError:
+    HAS_OCR = False
 
 # ------------------------------------------------------------------------------
 # 1. CONFIGURATION DE LA PAGE STREAMLIT
@@ -76,7 +95,7 @@ file_history_input = st.sidebar.file_uploader(
     type=["pdf"],
     accept_multiple_files=False,
     key=f"hist_{u_key}",
-    help="Téléversez le rapport PDF du mois précédent pour extraire l'historique M-1."
+    help="Téléversez le rapport PDF du mois précédent (Groupe ou Filiale) pour extraire l'historique M-1."
 )
 
 all_uploaded_files = (files_isiwork_input or []) + (files_artis_input or [])
@@ -95,110 +114,232 @@ st.info(
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 5. HISTORIQUE M-1 PAR DÉFAUT ET EXTRACTION DEPUIS LE MAIL PDF
+# 5. RÉFÉRENTIEL EXACT DES CORRESPONDANCES FILIALES (ZEENDOC & ARTIS)
 # ------------------------------------------------------------------------------
-HISTORIQUE_DEFAULT_M1 = {
-    "KOESIO CENTRE EST": 48.5,
-    "KOESIO EST": 40.3,
-    "KOESIO NORD OUEST": 34.1,
-    "KOESIO NORD-OUEST": 34.1,
-    "KOESIO ILE DE FRANCE": 36.8,
-    "KOESIO IDF": 36.8,
-    "KOESIO OCCITANIE": 36.9,
-    "EOLE": 34.2,
-    "2IT SOLUTIONS": 8.8,
-    "KOESIO PACA": 39.2,
-    "KOESIO MEDITERRANEE": 25.4,
-    "TOTAL GROUPE CONSOLIDÉ": 36.6
+CORRESPONDANCE_ZEENDOC = {
+    "KOESIO NORD OUEST": ["KOESIO NORD-OUEST", "KOESIO NORD OUEST", "NORD OUEST", "NORD-OUEST", "KNO"],
+    "KOESIO OUEST": ["KOESIO OUEST", "OUEST"],
+    "KOESIO ILE DE FRANCE": ["KOESIO IDF", "KOESIO|Rappro Artis IDF", "KOESIO ILE DE FRANCE", "KOESIO ÎLE-DE-FRANCE", "ILE DE FRANCE", "ÎLE-DE-FRANCE", "IDF"],
+    "KOESIO AQUITAINE": ["JEAPI Aquitaine", "KOESIO AQUITAINE", "AQUITAINE", "EX GTO"],
+    "KOESIO OCCITANIE": ["BCMP", "KOESIO OCCITANIE", "OCCITANIE", "OCC"],
+    "KOESIO CENTRE EST": ["Esus", "KOESIO CENTRE EST", "CENTRE EST", "CEE"],
+    "2iT solutions": ["RHONE ALPES REPRO INFORMATIQUE", "RHÔNE ALPES REPRO INFORMATIQUE", "2iT solutions", "2IT SOLUTIONS", "KOESIO 2IT SOLUTIONS", "2IT"],
+    "KOESIO MEDITERRANEE": ["KOESIO MED", "KOESIO MEDITERRANEE", "KOESIO MÉDITERRANÉE", "MEDITERRANEE", "MÉDITERRANÉE"],
+    "KOESIO PACA": ["KOESIO PACA", "PACA"],
+    "KOESIO EST": ["KOESIO EST"],
+    "EOLE": ["KOESIO EOLE", "EOLE"]
 }
+
+def canonicalize_filiale(raw_name):
+    """Mappe tout libellé (Artis, Zeendoc, PDF) vers le nom officiel de la filiale dans CORRESPONDANCE_ZEENDOC."""
+    if pd.isna(raw_name) or not str(raw_name).strip():
+        return "Inconnue"
+    s_clean = str(raw_name).strip()
+    s_up = s_clean.upper()
+
+    # Vérification exacte ou par alias (les libellés les plus spécifiques d'abord)
+    ordered_keys = [
+        "KOESIO NORD OUEST",
+        "KOESIO ILE DE FRANCE",
+        "KOESIO CENTRE EST",
+        "KOESIO AQUITAINE",
+        "KOESIO OCCITANIE",
+        "KOESIO MEDITERRANEE",
+        "KOESIO PACA",
+        "KOESIO OUEST",
+        "KOESIO EST",
+        "2iT solutions",
+        "EOLE"
+    ]
+    for canon_key in ordered_keys:
+        aliases = CORRESPONDANCE_ZEENDOC.get(canon_key, [canon_key])
+        for alias in aliases:
+            if alias.upper() in s_up:
+                return canon_key
+    return s_clean
+
+# ------------------------------------------------------------------------------
+# 5B. LECTURE DYNAMIQUE DE L'HISTORIQUE M-1 DEPUIS LE MAIL PDF (AUCUNE VALEUR EN DUR)
+# ------------------------------------------------------------------------------
+def extract_text_from_pdf(pdf_file):
+    """Extrait le texte d'un PDF via pypdf, pdfplumber, PyMuPDF ou OCR fallback."""
+    if pdf_file is None:
+        return "", False
+
+    pdf_bytes = pdf_file.getvalue()
+    text_out = ""
+
+    # 1. pypdf
+    if HAS_PYPDF:
+        try:
+            import io
+            reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+            text_out = "\n".join((p.extract_text() or "") for p in reader.pages)
+        except Exception:
+            text_out = ""
+
+    # 2. pdfplumber fallback
+    if not text_out.strip() and HAS_PDFPLUMBER:
+        try:
+            import io
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                text_out = "\n".join((p.extract_text() or "") for p in pdf.pages)
+        except Exception:
+            pass
+
+    # 3. PyMuPDF (fitz) fallback
+    if not text_out.strip() and HAS_PYMUPDF:
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            text_out = "\n".join((page.get_text("text") or "") for page in doc)
+        except Exception:
+            pass
+
+    # 4. OCR Tesseract si PDF imprimé en mode image (ex: "Print to PDF" navigateur)
+    is_image_only = False
+    if not text_out.strip():
+        is_image_only = True
+        if HAS_OCR:
+            try:
+                images = convert_from_bytes(pdf_bytes, dpi=200)
+                ocr_texts = [pytesseract.image_to_string(img, lang="fra") for img in images]
+                text_out = "\n".join(ocr_texts)
+            except Exception:
+                pass
+
+    return text_out, is_image_only
 
 @st.cache_data
 def parse_pdf_history_full(pdf_file):
-    """Extrait l'historique M-1 (taux auto filiale / groupe, mois précédent et chantiers) depuis le PDF."""
-    hist_data = HISTORIQUE_DEFAULT_M1.copy()
+    """
+    Parse exclusivement le PDF historique téléversé (aucun taux hardcodé).
+    Supporte :
+      - Format Rapport National Consolidé Groupe (multi-filiales, mono ou bi-mois, ex. Septembre 2026)
+      - Format Mail Filiale Individuel (historique mensuel d'une filiale)
+    """
+    hist_data = {}
     hist_month_label = "M-1"
-    chantiers = [
-        "Stabilité opérationnelle de l'ERP : L'injection finale en comptabilité confirme la performance du batch automatique sans intervention utilisateur.",
-        "Levier \"Frais Annexes\" : Les Faux Manuels s'expliquent par l'absence des lignes de frais de port ou DEEE sur la commande d'achat ou le BL initial dans Artis.",
-        "Alerte Référentiels Prix : Suivi des mises à jour tarifaires en amont sur les partenaires stratégiques."
-    ]
-    if not pdf_file or not HAS_PYPDF:
-        return hist_data, hist_month_label, chantiers
+    chantiers = []
+    parse_status = "no_pdf"  # "no_pdf", "ok", "image_pdf_no_ocr", "empty_match"
 
-    try:
-        reader = pypdf.PdfReader(pdf_file)
-        full_text = ""
-        for page in reader.pages:
-            full_text += (page.extract_text() or "") + "\n"
+    if not pdf_file:
+        return hist_data, hist_month_label, chantiers, parse_status
 
-        if not full_text.strip():
-            # PDF scanné (image) : on tente de déduire le nom de filiale/mois depuis le nom du fichier
-            fname_upper = getattr(pdf_file, "name", "").upper()
-            if "IDF" in fname_upper or "ILE DE FRANCE" in fname_upper:
-                hist_month_label = "Septembre 2026"
-            return hist_data, hist_month_label, chantiers
+    full_text, is_image_only = extract_text_from_pdf(pdf_file)
 
-        # 1. Détection format Rapport Groupe (lignes par filiale : KOESIO XXX VolBrut GedPure VolEpure XX,X% (YYY))
-        pattern_ged_groupe = re.findall(
-            r'KOESIO\s*([A-Za-zÀ-ÿ\s\-\diT]+?)\s*(\d[\d\s]*)\s+(\d+)\s+(\d+)\s+([\d.,]+)\s*%\s*\(([\d\s]+)\)',
-            full_text
+    if not full_text.strip():
+        parse_status = "image_pdf_no_ocr" if is_image_only else "empty_match"
+        return hist_data, hist_month_label, chantiers, parse_status
+
+    # Normalisation des espaces multiples et retours à la ligne dans les noms de filiales coupés sur 2 lignes
+    # Ex: "KOESIO ILE DE\nFRANCE" -> "KOESIO ILE DE FRANCE"
+    text_norm = re.sub(r'([A-ZÀ-Ÿ])\n([A-ZÀ-Ÿ])', r'\1 \2', full_text)
+
+    # Détection du dernier mois mentionné dans l'en-tête ou les colonnes (ex: "Septembre 2026")
+    mois_list = re.findall(
+        r'(Janvier|Février|Mars|Avril|Mai|Juin|Juillet|Août|Aout|Septembre|Octobre|Novembre|Décembre)\s+(20\d{2})',
+        text_norm,
+        flags=re.IGNORECASE
+    )
+    if mois_list:
+        # On prend le mois le plus récent présent dans le rapport (avant le mail cité éventuel)
+        top_section = text_norm.split("2. VISION ERP")[0] if "2. VISION ERP" in text_norm else text_norm[:3500]
+        mois_top = re.findall(
+            r'(Janvier|Février|Mars|Avril|Mai|Juin|Juillet|Août|Aout|Septembre|Octobre|Novembre|Décembre)\s+(20\d{2})',
+            top_section,
+            flags=re.IGNORECASE
         )
-        for match in pattern_ged_groupe:
-            name = match[0].strip().upper()
-            auto_pct = float(match[4].replace(',', '.'))
-            hist_data[f"KOESIO {name}"] = auto_pct
+        chosen_m, chosen_y = mois_top[-1] if mois_top else mois_list[0]
+        chosen_m = "Août" if chosen_m.lower() == "aout" else chosen_m.capitalize()
+        hist_month_label = f"{chosen_m} {chosen_y}"
 
-        # 2. Détection format Mail Filiale Individuel (ex: "Septembre 2026 | 356 | 11.0% (44) | 36.8% (131)")
+    # 1. Extraction des lignes de filiales (Format Rapport National Consolidé)
+    # On isole la section "1. VISION GED" avant le mail cité antérieur (ex: "Le mar. 25 août")
+    sec_ged = text_norm.split("2. VISION ERP")[0] if "2. VISION ERP" in text_norm else text_norm
+    if "Le " in sec_ged and " a écrit" in sec_ged:
+        sec_ged = sec_ged.split(" a écrit")[0]
+
+    # Motif capturant chaque nom de filiale suivi de ses blocs de taux "XX.X% (NNN)"
+    entity_regex = (
+        r'(KOESIO\s+(?:ILE\s+DE\s+FRANCE|ÎLE-DE-FRANCE|CENTRE\s+EST|NORD\s+OUEST|NORD-OUEST|'
+        r'MEDITERRANEE|MÉDITERRANÉE|OCCITANIE|AQUITAINE|OUEST|PACA|EST|EOLE)|'
+        r'2iT\s*solutions|2IT\s*SOLUTIONS|EOLE|TOTAL\s+GROUPE\s+CONSOLID[EÉ])'
+    )
+
+    for m_ent in re.finditer(entity_regex, sec_ged, flags=re.IGNORECASE):
+        raw_ent = re.sub(r'\s+', ' ', m_ent.group(1)).strip()
+        canon_ent = "TOTAL GROUPE CONSOLIDÉ" if "TOTAL" in raw_ent.upper() else canonicalize_filiale(raw_ent)
+        # Fenêtre de texte suivant le nom de la filiale sur la même ligne/bloc
+        window = sec_ged[m_ent.end():m_ent.end() + 260]
+        # Arrêt avant la prochaine filiale éventuelle
+        next_m = re.search(entity_regex, window, flags=re.IGNORECASE)
+        if next_m:
+            window = window[:next_m.start()]
+
+        # Tous les pourcentages suivis d'un volume entre parenthèses : ex "53.7% (359)" et "37.2% (163)"
+        pct_matches = re.findall(r'(\d{1,3}[.,]\d)\s*%\s*\(\s*\d[\d\s]*\)', window)
+        if pct_matches:
+            # Si tableau comparatif 2 mois (Août et Septembre), le 1er bloc = M-2 et le 2ème bloc = M-1 (le plus récent)
+            # Chaque bloc commence par le % Rapprochement Auto suivi du % Faux Manuel, % Vrai Manuel...
+            # En bi-mois, le dernier taux auto de la ligne correspond au mois le plus récent (Septembre)
+            if len(pct_matches) >= 6:
+                # 2 mois côte à côte (4 ou 5 taux par mois -> le taux auto de M-1 est la 5ème ou 6ème occurrence)
+                val_auto = float(pct_matches[5].replace(',', '.'))
+            elif len(pct_matches) >= 5:
+                val_auto = float(pct_matches[4].replace(',', '.'))
+            else:
+                val_auto = float(pct_matches[0].replace(',', '.'))
+            hist_data[canon_ent] = val_auto
+
+    # 2. Extraction Format Mail Filiale Individuel (ex: "Septembre 2026 | 356 | 11.0% (44) | 36.8% (131)")
+    if not hist_data:
         filiale_pdf = None
-        m_fil = re.search(r'(KOESIO\s+[A-ZÀ-Ÿ\s\-]+?|EOLE|2IT\s+SOLUTIONS)(?:\s*[-–]|\s+sur\s+la\s+période|\n)', full_text)
-        if m_fil:
-            filiale_pdf = m_fil.group(1).strip().upper()
-            if filiale_pdf == "KOESIO IDF":
-                filiale_pdf = "KOESIO ILE DE FRANCE"
+        m_fil = re.search(entity_regex, sec_ged, flags=re.IGNORECASE)
+        if m_fil and "TOTAL" not in m_fil.group(1).upper():
+            filiale_pdf = canonicalize_filiale(re.sub(r'\s+', ' ', m_fil.group(1)).strip())
 
         pattern_mois_filiale = re.findall(
-            r'(Janvier|Février|Mars|Avril|Mai|Juin|Juillet|Août|Septembre|Octobre|Novembre|Décembre)\s+(20\d{2}).*?([\d.,]+)\s*%\s*\(\d+\)\s+([\d.,]+)\s*%\s*\(\d+\)',
-            full_text,
+            r'(Janvier|Février|Mars|Avril|Mai|Juin|Juillet|Août|Aout|Septembre|Octobre|Novembre|Décembre)\s+(20\d{2}).*?(\d{1,3}[.,]\d)\s*%\s*\(\d+\)\s+(\d{1,3}[.,]\d)\s*%\s*\(\d+\)',
+            sec_ged,
             flags=re.IGNORECASE | re.DOTALL
         )
         if pattern_mois_filiale:
-            last_mois, last_year, _, auto_pct_str = pattern_mois_filiale[-1]
-            hist_month_label = f"{last_mois.capitalize()} {last_year}"
-            auto_val = float(auto_pct_str.replace(',', '.'))
+            last_m, last_y, _, auto_str = pattern_mois_filiale[-1]
+            last_m = "Août" if last_m.lower() == "aout" else last_m.capitalize()
+            hist_month_label = f"{last_m} {last_y}"
+            auto_val = float(auto_str.replace(',', '.'))
             if filiale_pdf:
                 hist_data[filiale_pdf] = auto_val
             else:
                 hist_data["FILIALE_PDF"] = auto_val
 
-        return hist_data, hist_month_label, chantiers
-    except Exception:
-        return hist_data, hist_month_label, chantiers
+    # 3. Extraction dynamique de la section 4 (Suivi des chantiers techniques) depuis le PDF
+    m_sec4 = re.search(r'4\.\s*SUIVI DES CHANTIERS[^\n]*\n(.*?)(?:Cordialement|Louise BRUN|https://|$)', text_norm, flags=re.IGNORECASE | re.DOTALL)
+    if m_sec4:
+        raw_lines = [l.strip(" •-\t") for l in m_sec4.group(1).splitlines() if l.strip()]
+        chantiers = [l for l in raw_lines if len(l) > 10 and not l.startswith("http")][:5]
 
-dict_hist_m1, hist_month_m1_label, list_chantiers_m1 = parse_pdf_history_full(file_history_input)
+    parse_status = "ok" if hist_data else "empty_match"
+    return hist_data, hist_month_label, chantiers, parse_status
+
+dict_hist_m1, hist_month_m1_label, list_chantiers_m1, pdf_parse_status = parse_pdf_history_full(file_history_input)
 
 def get_hist_auto_for_filiale(filiale_name, compare_dict):
-    """Recherche le taux M-1 correspondant à une filiale donnée."""
+    """Recherche le taux M-1 extrait du PDF pour une filiale donnée (sans valeur en dur)."""
     if not compare_dict or not filiale_name:
         return None
-    f_up = filiale_name.upper().strip()
-    aliases = {
-        "KOESIO ILE DE FRANCE": ["KOESIO ILE DE FRANCE", "KOESIO IDF"],
-        "KOESIO NORD OUEST": ["KOESIO NORD OUEST", "KOESIO NORD-OUEST"],
-        "KOESIO NORD-OUEST": ["KOESIO NORD-OUEST", "KOESIO NORD OUEST"],
-    }
-    candidates = aliases.get(f_up, [f_up])
-    for cand in candidates:
-        if cand in compare_dict:
-            return compare_dict[cand]
+    canon = canonicalize_filiale(filiale_name)
+    if canon in compare_dict:
+        return compare_dict[canon]
     for key_h, val_h in compare_dict.items():
-        if f_up in key_h.upper() or key_h.upper() in f_up:
+        if canon.upper() == key_h.upper():
             return val_h
     return compare_dict.get("FILIALE_PDF", None)
 
 def format_tendance_auto(pct_actuel, pct_m1, label_m1="M-1"):
-    """Formate le texte explicite de tendance (augmente / descend / stabilise) pour le mail filiale."""
+    """Indique explicitement à la filiale si son taux automatique augmente, descend ou se stabilise."""
     if pct_m1 is None:
-        return f"Votre taux de rapprochement automatique s'établit à <b>{pct_actuel:.1f}%</b> ce mois-ci."
+        return f"Votre taux de rapprochement automatique s'établit à <b>{pct_actuel:.1f}%</b> ce mois-ci <i>(aucun taux historique M-1 détecté dans le PDF)</i>."
     diff = round(pct_actuel - pct_m1, 1)
     if diff > 0.5:
         return (
@@ -250,13 +391,13 @@ def load_all_data(uploaded_files):
                 else:
                     df_isi = pd.read_csv(file, header=header_row)
                 
-                # Filtrage des lignes vides éventuelles en pied d'export Zeendoc
                 if 'Identifiant' in df_isi.columns:
                     df_isi = df_isi[df_isi['Identifiant'].notna()].copy()
                 else:
                     df_isi = df_isi.dropna(how='all').copy()
                     
                 df_isi['Organisation_Zeendoc'] = entite_detectee
+                df_isi['Filiale_Canonique'] = canonicalize_filiale(entite_detectee)
                 isi_list.append(df_isi)
             else:
                 if file.name.endswith('.xlsx'):
@@ -266,7 +407,7 @@ def load_all_data(uploaded_files):
                 
                 df_art = df_art.dropna(how='all').copy()
                 if 'Organisation interne' in df_art.columns:
-                    df_art['Organisation interne'] = df_art['Organisation interne'].replace('KOESIO AQUITAINE (EX GTO)', 'KOESIO AQUITAINE')
+                    df_art['Organisation interne'] = df_art['Organisation interne'].apply(canonicalize_filiale)
                     
                 art_list.append(df_art)
                 
@@ -288,8 +429,8 @@ def detect_filiale(df_art, df_isi):
         filiales = df_art['Organisation interne'].dropna().unique().tolist()
         if filiales:
             return ", ".join(map(str, filiales))
-    if not df_isi.empty and 'Organisation_Zeendoc' in df_isi.columns:
-        orgs = df_isi['Organisation_Zeendoc'].dropna().unique().tolist()
+    if not df_isi.empty and 'Filiale_Canonique' in df_isi.columns:
+        orgs = df_isi['Filiale_Canonique'].dropna().unique().tolist()
         if orgs:
             return ", ".join(map(str, orgs))
     return "En attente de fichier..."
@@ -385,7 +526,9 @@ def compute_pa_metrics(df_isi):
 
     return nb_pa, nb_doublons, df_top10_pa
 
-# Fonction d'analyse consolidée par période
+# ------------------------------------------------------------------------------
+# 8C. ANALYSE CONSOLIDÉE PAR PÉRIODE
+# ------------------------------------------------------------------------------
 def compute_consolidation_for_period(p_period, compare_dict=None, compare_label="M-1"):
     if not df_artis.empty and 'Date' in df_artis.columns:
         df_art_p = df_artis[pd.to_datetime(df_artis['Date'], errors='coerce').dt.to_period('M') == p_period]
@@ -397,24 +540,9 @@ def compute_consolidation_for_period(p_period, compare_dict=None, compare_label=
     else:
         df_isi_p = df_isiwork
         
-    filiales_g = df_art_p['Organisation interne'].dropna().unique().tolist() if 'Organisation interne' in df_art_p.columns else []
-    if not filiales_g and not df_isi_p.empty and 'Organisation_Zeendoc' in df_isi_p.columns:
-        filiales_g = df_isi_p['Organisation_Zeendoc'].dropna().unique().tolist()
-    
-    CORRESPONDANCE_ZEENDOC = {
-        "KOESIO NORD OUEST": ["KOESIO NORD-OUEST", "KOESIO NORD OUEST", "KNO"],
-        "KOESIO NORD-OUEST": ["KOESIO NORD-OUEST", "KOESIO NORD OUEST", "KNO"],
-        "KOESIO OUEST": ["KOESIO OUEST"],
-        "KOESIO ILE DE FRANCE": ["KOESIO IDF", "KOESIO|Rappro Artis IDF", "IDF", "ILE DE FRANCE"],
-        "KOESIO AQUITAINE": ["JEAPI Aquitaine", "AQUITAINE"],
-        "KOESIO OCCITANIE": ["BCMP", "OCCITANIE", "OCC"],
-        "KOESIO CENTRE EST": ["Esus", "CENTRE EST", "CEE"],
-        "2iT solutions": ["RHONE ALPES REPRO INFORMATIQUE", "2IT"],
-        "KOESIO MEDITERRANEE": ["KOESIO MED", "MEDITERRANEE"],
-        "KOESIO PACA": ["KOESIO PACA", "PACA"],
-        "KOESIO EST": ["KOESIO EST"],
-        "EOLE": ["EOLE"]
-    }
+    f_art_list = df_art_p['Organisation interne'].dropna().unique().tolist() if 'Organisation interne' in df_art_p.columns else []
+    f_isi_list = df_isi_p['Filiale_Canonique'].dropna().unique().tolist() if 'Filiale_Canonique' in df_isi_p.columns else []
+    filiales_g = sorted(list(set(f_art_list + f_isi_list)))
     
     rows_ged_raw, rows_erp_raw = [], []
     tot_vol_brut, tot_ged_pure, tot_vol_epure, tot_auto, tot_faux, tot_vrai, tot_att = 0, 0, 0, 0, 0, 0, 0
@@ -539,8 +667,8 @@ def compute_consolidation_for_period(p_period, compare_dict=None, compare_label=
     dict_pct_auto_out["TOTAL GROUPE CONSOLIDÉ"] = pct_tot_a
     
     str_tot_auto = f"{pct_tot_a:.1f}% ({tot_auto})"
-    if compare_dict:
-        tot_comp = compare_dict.get("TOTAL GROUPE CONSOLIDÉ", 36.6)
+    if compare_dict and "TOTAL GROUPE CONSOLIDÉ" in compare_dict:
+        tot_comp = compare_dict["TOTAL GROUPE CONSOLIDÉ"]
         delta_tot = pct_tot_a - tot_comp
         symb_tot = "↗️" if delta_tot > 0.5 else "↘️" if delta_tot < -0.5 else "➡️"
         str_tot_auto += f" [{symb_tot} {delta_tot:+.1f}% vs {compare_label}]"
@@ -658,6 +786,15 @@ MAIL_TABLE_CSS = """
 </style>
 """
 
+# Alerte informative dans la barre latérale sur l'état de lecture du PDF historique M-1
+if file_history_input is not None:
+    if pdf_parse_status == "ok":
+        st.sidebar.success(f"✅ Historique M-1 extrait ({hist_month_m1_label}) : {len(dict_hist_m1)} entité(s) lue(s) dans le PDF.")
+    elif pdf_parse_status == "image_pdf_no_ocr":
+        st.sidebar.warning("⚠️ Ce PDF est une image scannée sans texte sélectionnable (enregistrez-le en PDF natif ou installez Tesseract OCR pour lire les chiffres).")
+    else:
+        st.sidebar.warning("⚠️ Aucun taux historique n'a pu être extrait de ce PDF.")
+
 # ------------------------------------------------------------------------------
 # 11. ONGLETS DE NAVIGATION
 # ------------------------------------------------------------------------------
@@ -678,13 +815,18 @@ with tab1:
         with c2:
             st.metric("Total Factures Isiwork", f"{len(df_isiwork_filtered):,}".replace(',', ' '))
         with c3:
-            st.metric("Factures issues de PA", f"{nb_factures_pa:,}".replace(',', ' '), delta=f"{nb_doublons_pa} doublons" if nb_doublons_pa > 0 else "0 doublon", delta_color="inverse" if nb_doublons_pa > 0 else "off")
+            st.metric(
+                "Factures issues de PA",
+                f"{nb_factures_pa:,}".replace(',', ' '),
+                delta=f"{nb_doublons_pa} doublons" if nb_doublons_pa > 0 else "0 doublon",
+                delta_color="inverse" if nb_doublons_pa > 0 else "off"
+            )
         with c4:
             st.metric("Filiale Détectée", filiale_detectee)
             
         st.markdown("---")
         
-        dict_prev_filiale = dict_hist_m1
+        dict_prev_filiale = dict_hist_m1 if dict_hist_m1 else None
         label_prev_filiale = hist_month_m1_label
         computed_filiale_months = []
         
@@ -692,7 +834,6 @@ with tab1:
             """Supprime la ligne TOTAL redondante lorsqu'il n'y a qu'une seule filiale analysée."""
             if df_table is None or df_table.empty:
                 return df_table
-            # Si 2 lignes (1 filiale + 1 ligne TOTAL), on ne garde que la ligne de la filiale
             if len(df_table) == 2 and "Filiale Groupe" in df_table.columns:
                 df_one = df_table[~df_table["Filiale Groupe"].astype(str).str.startswith("TOTAL")].copy()
                 if "Rang" in df_one.columns:
@@ -706,7 +847,6 @@ with tab1:
             df_g_m = clean_filiale_df(df_g_m)
             df_e_m = clean_filiale_df(df_e_m)
             
-            # Récupération du taux auto actuel et précédent de la filiale
             filiale_cle = filiale_detectee.split(",")[0].strip()
             pct_auto_m = dict_auto_m.get(filiale_cle, dict_auto_m.get("TOTAL GROUPE CONSOLIDÉ", 0.0))
             pct_auto_prev = get_hist_auto_for_filiale(filiale_cle, dict_prev_filiale)
@@ -786,7 +926,7 @@ with tab1:
             m_single = computed_filiale_months[0]
             st.markdown(f"### 📈 1. VISION GED / ISIWORK — {m_single['label']}")
             st.dataframe(m_single['df_ged'], hide_index=True, use_container_width=True)
-            st.info(m_single['tendance_html'].replace("<b>", "**").replace("</b>", "**"))
+            st.info(m_single['tendance_html'].replace("<b>", "**").replace("</b>", "**").replace("<i>", "*").replace("</i>", "*"))
             
             st.markdown(f"### 💻 2. VISION ERP ARTIS — {m_single['label']}")
             st.dataframe(m_single['df_erp'], hide_index=True, use_container_width=True)
@@ -828,11 +968,15 @@ with tab1:
             else f"Vous avez désormais <b>{nb_factures_pa} factures issues de la PA</b> sur cette période."
         )
 
-        # Rétablissement du Mail Filiale complet (sections 1 à 5)
+        # Mail Filiale complet (sections 1 à 5)
         st.markdown("---")
         st.markdown(f"### ✉️ Modèle de Mail Filiale — {filiale_detectee} (Prêt à copier pour Outlook)")
         
-        txt_chantiers_filiale_html = "".join([f"<li>{c}</li>" for c in list_chantiers_m1])
+        chantiers_display = list_chantiers_m1 if list_chantiers_m1 else [
+            "Stabilité opérationnelle de l'ERP et suivi du batch d'injection automatique.",
+            "Résorption des Faux Manuels (frais de port et DEEE) sur les commandes et BL."
+        ]
+        txt_chantiers_filiale_html = "".join([f"<li>{c}</li>" for c in chantiers_display])
         
         mail_filiale_html = f"""
         {MAIL_TABLE_CSS}
@@ -893,7 +1037,7 @@ with tab2:
     st.subheader("🌍 Consolidation Inter-Filiales — Groupe Koesio")
     
     if all_periods_p:
-        dict_prev_month = dict_hist_m1
+        dict_prev_month = dict_hist_m1 if dict_hist_m1 else None
         label_prev_month = hist_month_m1_label
         
         computed_months = []
@@ -994,7 +1138,11 @@ with tab2:
         st.markdown("---")
         st.markdown("### ✉️ Modèle de Mail National Consolidé (Prêt à copier pour Outlook)")
         
-        txt_chantiers_html = "".join([f"<li>{c}</li>" for c in list_chantiers_m1])
+        chantiers_groupe_display = list_chantiers_m1 if list_chantiers_m1 else [
+            "Alerte Référentiels Prix : SHARP, ACTUAL SYSTEMES, KATUN FRANCE.",
+            "Correctif API TVA : Suivi de la livraison globale sur Artis v2."
+        ]
+        txt_chantiers_html = "".join([f"<li>{c}</li>" for c in chantiers_groupe_display])
         
         alerte_pa_groupe_html = (
             f"⚠️ <b>Attention à vos doublons :</b> vous avez désormais <b>{nb_factures_pa} factures issues de la PA</b> "
